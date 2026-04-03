@@ -1,0 +1,104 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // User Profile Validation
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (data.keys().hasOnly(['uid', 'displayName', 'photoURL', 'email', 'birthDate', 'sex', 'bloodType']));
+    }
+
+    // Health Sample Validation
+    function isValidHealthSample(data) {
+      return data.keys().hasAll(['uid', 'type', 'value', 'unit', 'timestamp']) &&
+             data.uid == request.auth.uid &&
+             data.type is string &&
+             data.value is number &&
+             data.unit is string &&
+             isValidDateString(data.timestamp);
+    }
+
+    // Medication Validation
+    function isValidMedication(data) {
+      return data.keys().hasAll(['name', 'dosage', 'active']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.dosage is string &&
+             data.active is bool &&
+             (data.keys().hasOnly(['name', 'dosage', 'frequency', 'instructions', 'isSOS', 'active']));
+    }
+
+    // Medication Log Validation
+    function isValidMedicationLog(data) {
+      return data.keys().hasAll(['medicationId', 'status', 'timestamp']) &&
+             data.medicationId is string &&
+             data.status in ['Taken', 'Skipped'] &&
+             isValidDateString(data.timestamp);
+    }
+
+    // Symptom Log Validation
+    function isValidSymptomLog(data) {
+      return data.keys().hasAll(['type', 'intensity', 'timestamp']) &&
+             data.type in ['Dor', 'Fadiga', 'Náusea', 'Neuropatia'] &&
+             data.intensity is number && data.intensity >= 1 && data.intensity <= 10 &&
+             isValidDateString(data.timestamp);
+    }
+
+    // Treatment Cycle Validation
+    function isValidTreatmentCycle(data) {
+      return data.keys().hasAll(['name', 'startDate', 'totalDays']) &&
+             data.name is string &&
+             isValidDateString(data.startDate) &&
+             data.totalDays is number;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data);
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) && 
+                    request.resource.data.uid == resource.data.uid;
+
+      match /health_samples/{sampleId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidHealthSample(request.resource.data);
+        allow update: if isOwner(userId) && isValidHealthSample(request.resource.data) &&
+                      request.resource.data.uid == resource.data.uid;
+        allow delete: if isOwner(userId);
+      }
+
+      match /medications/{medId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidMedication(request.resource.data);
+      }
+
+      match /medication_logs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidMedicationLog(request.resource.data);
+      }
+
+      match /symptom_logs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidSymptomLog(request.resource.data);
+      }
+
+      match /treatment_cycles/{cycleId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidTreatmentCycle(request.resource.data);
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Basic user information and settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "User's display name" },
+        "photoURL": { "type": "string", "description": "User's profile picture URL" },
+        "email": { "type": "string", "description": "User's email address" },
+        "birthDate": { "type": "string", "format": "date", "description": "User's birth date" },
+        "sex": { "type": "string", "enum": ["male", "female", "other"], "description": "Biological sex" },
+        "bloodType": { "type": "string", "description": "Blood type (e.g., A+, O-)" }
+      },
+      "required": ["uid", "email"]
+    },
+    "HealthSample": {
+      "title": "Health Sample",
+      "description": "A single data point for a health metric.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner's UID" },
+        "type": { "type": "string", "description": "Type of metric (e.g., steps, heart_rate, tumor_size, temperature, leukocytes, platelets, hemoglobin)" },
+        "value": { "type": "number", "description": "The measured value" },
+        "unit": { "type": "string", "description": "The unit of measurement (e.g., count, bpm, mm, Celsius)" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the measurement was taken" },
+        "metadata": { "type": "object", "description": "Optional additional data" }
+      },
+      "required": ["uid", "type", "value", "unit", "timestamp"]
+    },
+    "Medication": {
+      "title": "Medication",
+      "description": "Stores medication schedule and details.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "dosage": { "type": "string" },
+        "frequency": { "type": "string" },
+        "instructions": { "type": "string", "enum": ["Com comida", "Em jejum", "Indiferente"] },
+        "isSOS": { "type": "boolean" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "dosage", "active"]
+    },
+    "MedicationLog": {
+      "title": "Medication Log",
+      "description": "Stores adherence logs for medications.",
+      "type": "object",
+      "properties": {
+        "medicationId": { "type": "string" },
+        "medicationName": { "type": "string" },
+        "status": { "type": "string", "enum": ["Taken", "Skipped"] },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["medicationId", "status", "timestamp"]
+    },
+    "SymptomLog": {
+      "title": "Symptom Log",
+      "description": "Stores symptom intensity logs.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["Dor", "Fadiga", "Náusea", "Neuropatia"] },
+        "intensity": { "type": "number", "description": "Scale 1-10" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string" }
+      },
+      "required": ["type", "intensity", "timestamp"]
+    },
+    "TreatmentCycle": {
+      "title": "Treatment Cycle",
+      "description": "Stores information about chemotherapy cycles.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "startDate": { "type": "string", "format": "date-time" },
+        "totalDays": { "type": "number" },
+        "currentCycle": { "type": "number" },
+        "totalCycles": { "type": "number" }
+      },
+      "required": ["name", "startDate", "totalDays"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents."
+    },
+    "/users/{userId}/health_samples/{sampleId}": {
+      "schema": "HealthSample",
+      "description": "Health data samples for a specific user."
+    },
+    "/users/{userId}/medications/{medId}": {
+      "schema": "Medication",
+      "description": "User's medication list."
+    },
+    "/users/{userId}/medication_logs/{logId}": {
+      "schema": "MedicationLog",
+      "description": "Adherence logs for medications."
+    },
+    "/users/{userId}/symptom_logs/{logId}": {
+      "schema": "SymptomLog",
+      "description": "Symptom intensity logs."
+    },
+    "/users/{userId}/treatment_cycles/{cycleId}": {
+      "schema": "TreatmentCycle",
+      "description": "Treatment cycle information."
+    }
+  }
+}

@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-apple-background: #F2F2F7;
+  --color-apple-surface: #FFFFFF;
+  --color-apple-activity: #FF2D55;
+  --color-apple-mindfulness: #00C7BE;
+  --color-apple-nutrition: #34C759;
+  --color-apple-sleep: #5E5CE6;
+  --color-apple-text-primary: #000000;
+  --color-apple-text-secondary: #3C3C4399;
+  --color-apple-text-muted: #3C3C434D;
+  --color-apple-border: #E5E5EA;
+  
+  --radius-apple-lg: 20px;
+  --radius-apple-xl: 24px;
+}
+
+@layer base {
+  body {
+    @apply bg-apple-background text-apple-text-primary font-sans antialiased;
+  }
+}
+
+.apple-card {
+  @apply bg-apple-surface rounded-apple-lg p-6 mb-4 shadow-sm border-none;
+}
+
+.glass-pill {
+  @apply bg-white/70 backdrop-blur-xl border border-white/20 rounded-full shadow-lg;
+}
+
+.apple-gradient-bg {
+  background: 
+    radial-gradient(at 0% 0%, rgba(255, 180, 150, 0.5) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(255, 150, 200, 0.5) 0px, transparent 50%),
+    radial-gradient(at 50% 10%, rgba(200, 150, 255, 0.4) 0px, transparent 50%),
+    radial-gradient(at 0% 20%, rgba(255, 200, 150, 0.3) 0px, transparent 40%),
+    #F2F2F7;
+  background-attachment: fixed;
+}
+
+.apple-title {
+  @apply text-4xl font-black tracking-tighter mb-4 text-apple-text-primary;
+}
+
+.apple-section-header {
+  @apply text-xl font-bold mb-2;
+}
+
