@@ -35,17 +35,29 @@ service cloud.firestore {
 
     // Medication Validation
     function isValidMedication(data) {
-      return data.keys().hasAll(['name', 'dosage', 'active']) &&
+      let requiredFields = ['name', 'type', 'instructions', 'isSOS', 'active'];
+      let allowedFields = ['name', 'type', 'intensity', 'unit', 'shape', 'colors', 'schedule', 'duration', 'instructions', 'isSOS', 'active'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
              data.name is string && data.name.size() > 0 &&
-             data.dosage is string &&
+             data.type is string &&
+             data.instructions is string &&
+             data.isSOS is bool &&
              data.active is bool &&
-             (data.keys().hasOnly(['name', 'dosage', 'frequency', 'instructions', 'isSOS', 'active']));
+             (!('intensity' in data) || data.intensity is string) &&
+             (!('unit' in data) || data.unit is string) &&
+             (!('shape' in data) || data.shape is string) &&
+             (!('colors' in data) || (data.colors is map && data.colors.keys().hasAll(['left', 'right', 'background']))) &&
+             (!('schedule' in data) || (data.schedule is map && data.schedule.keys().hasAll(['frequency', 'times']))) &&
+             (!('duration' in data) || (data.duration is map && data.duration.keys().hasAll(['startDate'])));
     }
 
     // Medication Log Validation
     function isValidMedicationLog(data) {
-      return data.keys().hasAll(['medicationId', 'status', 'timestamp']) &&
+      return data.keys().hasAll(['medicationId', 'medicationName', 'status', 'timestamp']) &&
              data.medicationId is string &&
+             data.medicationName is string &&
              data.status in ['Taken', 'Skipped'] &&
              isValidDateString(data.timestamp);
     }
@@ -55,15 +67,22 @@ service cloud.firestore {
       return data.keys().hasAll(['type', 'intensity', 'timestamp']) &&
              data.type in ['Dor', 'Fadiga', 'Náusea', 'Neuropatia'] &&
              data.intensity is number && data.intensity >= 1 && data.intensity <= 10 &&
-             isValidDateString(data.timestamp);
+             isValidDateString(data.timestamp) &&
+             (!('notes' in data) || data.notes is string);
     }
 
     // Treatment Cycle Validation
     function isValidTreatmentCycle(data) {
-      return data.keys().hasAll(['name', 'startDate', 'totalDays']) &&
+      return data.keys().hasAll(['name', 'startDate', 'totalDays', 'currentCycle', 'totalCycles']) &&
              data.name is string &&
              isValidDateString(data.startDate) &&
-             data.totalDays is number;
+             data.totalDays is number &&
+             data.currentCycle is number &&
+             data.totalCycles is number;
+    }
+
+    match /test/connection {
+      allow read: if isAuthenticated();
     }
 
     match /users/{userId} {

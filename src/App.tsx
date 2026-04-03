@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect, createContext, useContext, Component } from 'react';
 import { 
   Activity, 
   Heart, 
@@ -19,7 +19,10 @@ import {
   Smartphone,
   ClipboardCheck,
   ShieldCheck,
-  Mic
+  Mic,
+  Pill,
+  Clock,
+  ChevronLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -65,9 +68,14 @@ interface HealthSample {
 interface Medication {
   id: string;
   name: string;
-  dosage: string;
-  frequency: string;
-  instructions: 'Com comida' | 'Em jejum' | 'Indiferente';
+  type: string;
+  intensity?: string;
+  unit?: string;
+  shape?: string;
+  colors?: { left: string; right: string; background: string };
+  schedule?: { frequency: string; times: string[] };
+  duration?: { startDate: string; endDate?: string };
+  instructions: string;
   isSOS: boolean;
   active: boolean;
 }
@@ -106,11 +114,109 @@ interface HealthContextType {
   cycles: TreatmentCycle[];
   loading: boolean;
   addSample: (type: string, value: number, unit: string) => Promise<void>;
+  addMedication: (med: Omit<Medication, 'id'>) => Promise<void>;
   addMedicationLog: (medId: string, name: string, status: 'Taken' | 'Skipped') => Promise<void>;
   addSymptomLog: (type: SymptomLog['type'], intensity: number, notes?: string) => Promise<void>;
 }
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string | null;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+};
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "Ocorreu um erro inesperado.";
+      try {
+        const parsed = JSON.parse(this.state.error?.message || "");
+        if (parsed.error) errorMessage = `Erro de Permissão: ${parsed.operationType} em ${parsed.path}`;
+      } catch (e) {
+        errorMessage = this.state.error?.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-apple-background text-center">
+          <div className="bg-white p-8 rounded-[32px] shadow-sm max-w-sm">
+            <X size={48} className="text-red-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold mb-2">Ops! Algo deu errado</h2>
+            <p className="text-apple-text-secondary mb-6">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-blue-500 text-white font-bold py-3 rounded-2xl active:scale-95 transition-transform"
+            >
+              Recarregar App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
 
 // --- Provider ---
 export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -143,23 +249,23 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const unsubSamples = onSnapshot(query(collection(db, `users/${user.uid}/health_samples`), orderBy('timestamp', 'desc'), limit(100)), (s) => {
       setSamples(s.docs.map(d => ({ id: d.id, ...d.data() })) as HealthSample[]);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/health_samples`));
 
     const unsubMeds = onSnapshot(collection(db, `users/${user.uid}/medications`), (s) => {
       setMedications(s.docs.map(d => ({ id: d.id, ...d.data() })) as Medication[]);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/medications`));
 
     const unsubLogs = onSnapshot(query(collection(db, `users/${user.uid}/medication_logs`), orderBy('timestamp', 'desc'), limit(50)), (s) => {
       setMedicationLogs(s.docs.map(d => ({ id: d.id, ...d.data() })) as MedicationLog[]);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/medication_logs`));
 
     const unsubSymptoms = onSnapshot(query(collection(db, `users/${user.uid}/symptom_logs`), orderBy('timestamp', 'desc'), limit(50)), (s) => {
       setSymptomLogs(s.docs.map(d => ({ id: d.id, ...d.data() })) as SymptomLog[]);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/symptom_logs`));
 
     const unsubCycles = onSnapshot(collection(db, `users/${user.uid}/treatment_cycles`), (s) => {
       setCycles(s.docs.map(d => ({ id: d.id, ...d.data() })) as TreatmentCycle[]);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/treatment_cycles`));
 
     return () => {
       unsubSamples();
@@ -172,29 +278,54 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const addSample = async (type: string, value: number, unit: string) => {
     if (!user) return;
-    await addDoc(collection(db, `users/${user.uid}/health_samples`), {
-      uid: user.uid, type, value, unit, timestamp: new Date().toISOString(),
-    });
+    const path = `users/${user.uid}/health_samples`;
+    try {
+      await addDoc(collection(db, path), {
+        uid: user.uid, type, value, unit, timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
+  const addMedication = async (med: Omit<Medication, 'id'>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/medications`;
+    try {
+      await addDoc(collection(db, path), med);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
   const addMedicationLog = async (medicationId: string, medicationName: string, status: 'Taken' | 'Skipped') => {
     if (!user) return;
-    await addDoc(collection(db, `users/${user.uid}/medication_logs`), {
-      medicationId, medicationName, status, timestamp: new Date().toISOString(),
-    });
+    const path = `users/${user.uid}/medication_logs`;
+    try {
+      await addDoc(collection(db, path), {
+        medicationId, medicationName, status, timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
   const addSymptomLog = async (type: SymptomLog['type'], intensity: number, notes?: string) => {
     if (!user) return;
-    await addDoc(collection(db, `users/${user.uid}/symptom_logs`), {
-      type, intensity, notes, timestamp: new Date().toISOString(),
-    });
+    const path = `users/${user.uid}/symptom_logs`;
+    try {
+      await addDoc(collection(db, path), {
+        type, intensity, notes, timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
   return (
     <HealthContext.Provider value={{ 
       user, samples, medications, medicationLogs, symptomLogs, cycles, loading, 
-      addSample, addMedicationLog, addSymptomLog 
+      addSample, addMedication, addMedicationLog, addSymptomLog 
     }}>
       {children}
     </HealthContext.Provider>
@@ -651,7 +782,9 @@ const SummaryView = ({ onOpenProfile }: { onOpenProfile: () => void }) => {
             <div key={m.id} className="apple-card p-4 flex justify-between items-center">
               <div>
                 <div className="font-bold">{m.name}</div>
-                <div className="text-apple-text-secondary text-xs">{m.dosage} • {m.instructions}</div>
+                <div className="text-apple-text-secondary text-xs">
+                  {m.intensity} {m.unit} • {m.type}
+                </div>
               </div>
               <button className="bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold">
                 Registrar
@@ -685,17 +818,398 @@ const SummaryView = ({ onOpenProfile }: { onOpenProfile: () => void }) => {
   );
 };
 
-const BrowseView = () => {
+const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const { medications, addMedication } = useHealth();
+  const [showAddFlow, setShowAddFlow] = useState(false);
+  const [step, setStep] = useState(1);
+  const [formData, setFormData] = useState<Partial<Medication>>({
+    name: '',
+    type: '',
+    intensity: '',
+    unit: 'mg',
+    shape: 'capsule',
+    colors: { left: '#FF3B30', right: '#FF9500', background: '#E5E5EA' },
+    schedule: { frequency: 'Todos os Dias', times: ['08:00'] },
+    duration: { startDate: new Date().toISOString() },
+    instructions: '',
+    isSOS: false,
+    active: true
+  });
+
+  const handleNext = () => setStep(s => s + 1);
+  const handleBack = () => step > 1 ? setStep(s => s - 1) : setShowAddFlow(false);
+
+  const saveMedication = async () => {
+    await addMedication(formData as Omit<Medication, 'id'>);
+    setShowAddFlow(false);
+    setStep(1);
+  };
+
+  if (showAddFlow) {
+    return (
+      <motion.div 
+        initial={{ x: '100%' }}
+        animate={{ x: 0 }}
+        exit={{ x: '100%' }}
+        className="fixed inset-0 bg-white z-[150] flex flex-col"
+      >
+        <div className="p-5 flex justify-between items-center border-b border-apple-border">
+          <button onClick={handleBack} className="text-blue-500 flex items-center gap-1">
+            <ChevronLeft size={24} />
+          </button>
+          <div className="text-center">
+            <p className="text-xs font-bold text-apple-text-secondary uppercase tracking-widest">
+              {formData.name || 'Novo Medicamento'}
+            </p>
+            {formData.type && <p className="text-[10px] text-apple-text-muted">{formData.type}</p>}
+          </div>
+          <button onClick={() => setShowAddFlow(false)} className="text-apple-text-muted">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="flex-grow overflow-y-auto p-6">
+          <AnimatePresence mode="wait">
+            {step === 1 && (
+              <motion.div key="step1" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <div className="flex justify-center mb-8">
+                  <div className="w-24 h-24 bg-apple-background rounded-3xl flex items-center justify-center shadow-inner">
+                    <Pill size={48} className="text-blue-500" />
+                  </div>
+                </div>
+                <h2 className="text-2xl font-bold mb-6">Nome do Medicamento</h2>
+                <input 
+                  type="text" 
+                  placeholder="Nome do Medicamento"
+                  value={formData.name}
+                  onChange={e => setFormData({ ...formData, name: e.target.value })}
+                  className="w-full bg-apple-background p-4 rounded-2xl text-lg outline-none focus:ring-2 focus:ring-blue-500/20"
+                  autoFocus
+                />
+              </motion.div>
+            )}
+
+            {step === 2 && (
+              <motion.div key="step2" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-6">Escolha o Tipo de Medicamento</h2>
+                <p className="text-apple-text-secondary font-bold text-sm mb-4">Formas Comuns</p>
+                <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border mb-6">
+                  {['Cápsula', 'Comprimido', 'Líquido', 'Tópico'].map(t => (
+                    <button 
+                      key={t}
+                      onClick={() => { setFormData({ ...formData, type: t }); handleNext(); }}
+                      className="w-full p-4 text-left flex justify-between items-center active:bg-apple-background"
+                    >
+                      <span className="font-semibold">{t}</span>
+                      {formData.type === t && <CheckCircle size={20} className="text-blue-500" />}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-apple-text-secondary font-bold text-sm mb-4">Mais Formas</p>
+                <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+                  {['Adesivo', 'Creme', 'Inalador', 'Injeção'].map(t => (
+                    <button 
+                      key={t}
+                      onClick={() => { setFormData({ ...formData, type: t }); handleNext(); }}
+                      className="w-full p-4 text-left flex justify-between items-center active:bg-apple-background"
+                    >
+                      <span className="font-semibold">{t}</span>
+                      {formData.type === t && <CheckCircle size={20} className="text-blue-500" />}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            {step === 3 && (
+              <motion.div key="step3" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-2">Adicione a Intensidade do Medicamento</h2>
+                <p className="text-apple-text-secondary mb-8">Intensidade</p>
+                <input 
+                  type="text" 
+                  placeholder="Adicionar Intensidade"
+                  value={formData.intensity}
+                  onChange={e => setFormData({ ...formData, intensity: e.target.value })}
+                  className="w-full bg-apple-background p-4 rounded-2xl text-lg outline-none mb-8"
+                />
+                <p className="text-apple-text-secondary font-bold text-sm mb-4">Escolha a Unidade</p>
+                <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+                  {['mg', 'mcg', 'g', 'mL', 'UI'].map(u => (
+                    <button 
+                      key={u}
+                      onClick={() => setFormData({ ...formData, unit: u })}
+                      className="w-full p-4 text-left flex justify-between items-center active:bg-apple-background"
+                    >
+                      <span className="font-semibold">{u}</span>
+                      {formData.unit === u && <CheckCircle size={20} className="text-blue-500" />}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            {step === 4 && (
+              <motion.div key="step4" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-8">Escolha a Forma</h2>
+                <div className="grid grid-cols-4 gap-4 mb-8">
+                  {['capsule', 'pill', 'oval', 'round', 'bottle', 'vial', 'cup', 'tube'].map(s => (
+                    <button 
+                      key={s}
+                      onClick={() => setFormData({ ...formData, shape: s })}
+                      className={`aspect-square rounded-full flex items-center justify-center transition-all ${formData.shape === s ? 'bg-blue-500 text-white scale-110 shadow-lg' : 'bg-apple-background text-apple-text-muted'}`}
+                    >
+                      <Pill size={24} />
+                    </button>
+                  ))}
+                </div>
+                <button onClick={handleNext} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl">Seguinte</button>
+                <button onClick={handleNext} className="w-full text-apple-text-muted font-bold py-4 mt-2">Ignorar</button>
+              </motion.div>
+            )}
+
+            {step === 5 && (
+              <motion.div key="step5" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-8">Escolha as Cores</h2>
+                <div className="space-y-8">
+                  <div>
+                    <p className="font-bold mb-4">Lado Esquerdo</p>
+                    <div className="flex flex-wrap gap-3">
+                      {['#FFFFFF', '#E5E5EA', '#FFD60A', '#FF9500', '#FF3B30', '#FF2D55', '#AF52DE', '#5856D6', '#007AFF', '#32ADE6', '#34C759'].map(c => (
+                        <button 
+                          key={c}
+                          onClick={() => setFormData({ ...formData, colors: { ...formData.colors!, left: c } })}
+                          className={`w-8 h-8 rounded-full border-2 ${formData.colors?.left === c ? 'border-blue-500 scale-125' : 'border-transparent'}`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="font-bold mb-4">Lado Direito</p>
+                    <div className="flex flex-wrap gap-3">
+                      {['#FFFFFF', '#E5E5EA', '#FFD60A', '#FF9500', '#FF3B30', '#FF2D55', '#AF52DE', '#5856D6', '#007AFF', '#32ADE6', '#34C759'].map(c => (
+                        <button 
+                          key={c}
+                          onClick={() => setFormData({ ...formData, colors: { ...formData.colors!, right: c } })}
+                          className={`w-8 h-8 rounded-full border-2 ${formData.colors?.right === c ? 'border-blue-500 scale-125' : 'border-transparent'}`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={handleNext} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl mt-12">Seguinte</button>
+              </motion.div>
+            )}
+
+            {step === 6 && (
+              <motion.div key="step6" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-8">Defina Horários</h2>
+                <div className="apple-card p-4 mb-8">
+                  <div className="flex justify-between items-center mb-4">
+                    <span className="font-semibold">Quando você tomará?</span>
+                  </div>
+                  <div className="flex justify-between items-center bg-apple-background p-4 rounded-xl">
+                    <span className="font-medium">Todos os Dias</span>
+                    <button className="text-blue-500 font-bold">Alterar</button>
+                  </div>
+                </div>
+                <div className="apple-card p-4">
+                  <p className="font-bold mb-4">Que horas?</p>
+                  <div className="flex items-center gap-4 bg-apple-background p-3 rounded-xl mb-4">
+                    <div className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white">
+                      <X size={14} strokeWidth={4} />
+                    </div>
+                    <span className="font-bold text-lg">08:00</span>
+                    <span className="ml-auto text-blue-500 font-medium">1 aplicação</span>
+                  </div>
+                  <button className="flex items-center gap-2 text-blue-500 font-bold">
+                    <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-white">
+                      <Plus size={14} strokeWidth={4} />
+                    </div>
+                    Adicione um Horário
+                  </button>
+                </div>
+                <p className="text-xs text-apple-text-muted mt-6 px-2">
+                  Se você agendar um horário, o app Saúde enviará uma notificação para você tomar os seus medicamentos.
+                </p>
+                <button onClick={handleNext} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl mt-8">Seguinte</button>
+              </motion.div>
+            )}
+
+            {step === 7 && (
+              <motion.div key="step7" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <h2 className="text-2xl font-bold mb-8">Duração</h2>
+                <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+                  <div className="p-4 flex justify-between items-center">
+                    <div>
+                      <p className="text-[10px] font-bold text-apple-text-muted uppercase">Data de Início</p>
+                      <p className="font-semibold">3 de abril (Hoje)</p>
+                    </div>
+                    <button className="text-blue-500 font-bold text-sm">Editar</button>
+                  </div>
+                  <div className="p-4 flex justify-between items-center">
+                    <div>
+                      <p className="text-[10px] font-bold text-apple-text-muted uppercase">Data do Término</p>
+                      <p className="font-semibold text-apple-text-muted">Nenhuma</p>
+                    </div>
+                    <button className="text-blue-500 font-bold text-sm">Editar</button>
+                  </div>
+                </div>
+                <button onClick={saveMedication} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl mt-12">Finalizar</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {step < 7 && step !== 4 && step !== 5 && step !== 6 && (
+          <div className="p-6 border-t border-apple-border">
+            <button 
+              onClick={handleNext}
+              disabled={!formData.name && step === 1}
+              className="w-full bg-blue-500 disabled:bg-apple-border text-white font-bold py-4 rounded-2xl active:scale-95 transition-transform"
+            >
+              Seguinte
+            </button>
+          </div>
+        )}
+      </motion.div>
+    );
+  }
+
+  return (
+    <div className="pb-24 pt-8 px-5">
+      <div className="flex items-center gap-2 mb-6">
+        <button onClick={onBack} className="text-blue-500">
+          <ChevronLeft size={28} />
+        </button>
+        <h1 className="apple-title mb-0">Medicamentos</h1>
+      </div>
+
+      {medications.length === 0 ? (
+        <div className="apple-card p-6 mb-8 text-center">
+          <div className="flex justify-center mb-6">
+            <div className="relative">
+              <div className="w-20 h-20 bg-apple-background rounded-full flex items-center justify-center">
+                <Pill size={40} className="text-blue-500" />
+              </div>
+              <div className="absolute -top-2 -right-2 w-8 h-8 bg-white rounded-full shadow-md flex items-center justify-center">
+                <Clock size={16} className="text-blue-500" />
+              </div>
+            </div>
+          </div>
+          <h2 className="text-2xl font-black mb-4">Configure Seus Medicamentos</h2>
+          <div className="space-y-4 text-left mb-8">
+            <div className="flex items-start gap-4">
+              <Pill className="text-blue-500 mt-1" size={24} />
+              <div>
+                <p className="font-bold">Controle todos os seus medicamentos em apenas um lugar.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-4">
+              <Clock className="text-blue-400 mt-1" size={24} />
+              <div>
+                <p className="font-bold text-apple-text-secondary">Defina horários e receba lembretes.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-4">
+              <div className="w-6 h-6 bg-red-500 rounded-lg flex items-center justify-center text-white mt-1">
+                <Lock size={14} />
+              </div>
+              <div>
+                <p className="font-bold text-apple-text-secondary">
+                  As informações sobre os seus medicamentos são criptografadas e não podem ser lidas por ninguém, incluindo a Apple, sem a sua permissão.
+                </p>
+              </div>
+            </div>
+          </div>
+          <button 
+            onClick={() => setShowAddFlow(true)}
+            className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform"
+          >
+            Adicionar um Medicamento
+          </button>
+        </div>
+      ) : (
+        <div className="mb-8">
+          <div className="flex justify-between items-end mb-4">
+            <h2 className="apple-section-header mb-0">Seus Medicamentos</h2>
+            <button onClick={() => setShowAddFlow(true)} className="text-blue-500 font-bold text-sm">Adicionar</button>
+          </div>
+          <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+            {medications.map(m => (
+              <div key={m.id} className="p-4 flex items-center gap-4">
+                <div 
+                  className="w-12 h-12 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: m.colors?.background || '#F2F2F7', color: m.colors?.left || '#007AFF' }}
+                >
+                  <Pill size={24} />
+                </div>
+                <div className="flex-grow">
+                  <p className="font-bold">{m.name}</p>
+                  <p className="text-xs text-apple-text-secondary">
+                    {m.intensity} {m.unit} • {m.type}
+                  </p>
+                </div>
+                <ChevronRight size={18} className="text-apple-text-muted" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <h2 className="apple-section-header">Sobre Medicamentos</h2>
+      <div className="apple-card p-0 overflow-hidden mb-8">
+        <div className="bg-slate-800 p-8 flex flex-wrap gap-4 justify-center">
+          <Activity className="text-blue-300" size={32} />
+          <Pill className="text-orange-400" size={32} />
+          <Utensils className="text-blue-200" size={32} />
+          <Heart className="text-red-400" size={32} />
+        </div>
+        <div className="p-5">
+          <h3 className="text-xl font-bold mb-2">Monitorando seus medicamentos</h3>
+          <p className="text-apple-text-secondary">Por que é importante saber o que você está tomando.</p>
+        </div>
+      </div>
+
+      <h2 className="apple-section-header">Mais</h2>
+      <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
+          <span className="font-semibold text-[17px]">Fixar no Resumo</span>
+          <div className="w-5 h-5 bg-yellow-400 rounded-full flex items-center justify-center text-white">
+            <Plus size={12} strokeWidth={4} />
+          </div>
+        </button>
+        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
+          <span className="font-semibold text-[17px] text-blue-500">Exportar PDF</span>
+        </button>
+        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
+          <span className="font-semibold text-[17px]">Opções</span>
+          <ChevronRight size={18} className="text-apple-text-muted" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const BrowseView = ({ searchQuery, onSelectCategory }: { searchQuery: string, onSelectCategory: (cat: string) => void }) => {
   const categories = [
-    { name: 'Acompanhamento de Ciclo', icon: <Activity />, color: '#FF2D55' },
+    { name: 'Acompanhamento de Ciclo de Quimioterapia', icon: <Activity />, color: '#FF2D55' },
+    { name: 'Radioterapia', icon: <Activity />, color: '#FF2D55' },
+    { name: 'Hormonoterapia', icon: <Activity />, color: '#FF2D55' },
     { name: 'Atividade', icon: <Activity />, color: '#FF2D55' },
     { name: 'Coração', icon: <Heart />, color: '#FF3B30' },
     { name: 'Sono', icon: <Moon />, color: '#5E5CE6' },
     { name: 'Nutrição', icon: <Utensils />, color: '#34C759' },
     { name: 'Sintomas', icon: <Activity />, color: '#FF9500' },
     { name: 'Sinais Vitais', icon: <Activity />, color: '#FF3B30' },
-    { name: 'Medicamentos', icon: <Activity />, color: '#32ADE6' },
+    { name: 'Medicamentos', icon: <Pill />, color: '#32ADE6' },
+    { name: 'Exames', icon: <FileText />, color: '#007AFF' },
   ];
+
+  const filteredCategories = categories.filter(cat => 
+    cat.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div className="pb-24 pt-8 px-5">
@@ -706,16 +1220,20 @@ const BrowseView = () => {
         <input 
           type="text" 
           placeholder="Buscar" 
-          className="w-full bg-apple-border/50 rounded-xl py-2.5 pl-10 pr-4 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
+          disabled
+          className="w-full bg-apple-border/50 rounded-xl py-2.5 pl-10 pr-4 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-medium opacity-50"
         />
       </div>
 
-      <h2 className="apple-section-header">Categorias de Saúde</h2>
+      <h2 className="apple-section-header">
+        {searchQuery ? 'Resultados da Busca' : 'Categorias de Saúde'}
+      </h2>
       <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
-        {categories.map((cat) => (
+        {filteredCategories.map((cat) => (
           <motion.div 
             key={cat.name}
             whileTap={{ backgroundColor: '#F2F2F7' }}
+            onClick={() => onSelectCategory(cat.name)}
             className="flex items-center justify-between p-4 cursor-pointer"
           >
             <div className="flex items-center gap-3">
@@ -727,6 +1245,11 @@ const BrowseView = () => {
             <ChevronRight size={18} className="text-apple-text-muted" />
           </motion.div>
         ))}
+        {filteredCategories.length === 0 && (
+          <div className="p-8 text-center text-apple-text-muted">
+            Nenhuma categoria encontrada para "{searchQuery}"
+          </div>
+        )}
       </div>
     </div>
   );
@@ -785,7 +1308,12 @@ const SharingView = () => {
   );
 };
 
-const BottomNav: React.FC<{ activeTab: string; setActiveTab: (tab: string) => void }> = ({ activeTab, setActiveTab }) => {
+const BottomNav: React.FC<{ 
+  activeTab: string; 
+  setActiveTab: (tab: string) => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
+}> = ({ activeTab, setActiveTab, searchQuery, setSearchQuery }) => {
   const tabs = [
     { id: 'summary', label: 'Resumo', icon: <Heart /> },
     { id: 'sharing', label: 'Compartilhamento', icon: <Users /> },
@@ -835,7 +1363,10 @@ const BottomNav: React.FC<{ activeTab: string; setActiveTab: (tab: string) => vo
             className="flex items-center gap-3 w-full max-w-md pointer-events-auto"
           >
             <button
-              onClick={() => setActiveTab('summary')}
+              onClick={() => {
+                setActiveTab('summary');
+                setSearchQuery('');
+              }}
               className="w-14 h-14 rounded-full flex items-center justify-center shadow-lg bg-white text-apple-text-primary transition-all active:scale-90 flex-shrink-0"
             >
               <Heart size={28} fill="currentColor" />
@@ -847,6 +1378,8 @@ const BottomNav: React.FC<{ activeTab: string; setActiveTab: (tab: string) => vo
                 type="text" 
                 placeholder="Buscar" 
                 autoFocus
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
                 className="bg-transparent border-none outline-none flex-grow text-lg font-medium text-apple-text-primary placeholder:text-apple-text-muted"
               />
               <Mic size={22} className="text-apple-text-primary" />
@@ -888,10 +1421,185 @@ const LoginScreen = () => {
   );
 };
 
+const OnboardingView: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
+  const [step, setStep] = useState(0);
+  const [direction, setDirection] = useState(0);
+
+  const steps = [
+    {
+      title: "Bem-vindo ao Saúde",
+      description: "Sua jornada de tratamento organizada e segura, seguindo os padrões do Apple Health.",
+      icon: <Heart size={64} className="text-apple-activity" fill="currentColor" />,
+      color: "text-apple-activity"
+    },
+    {
+      title: "Ciclos de Tratamento",
+      description: "Acompanhe cada fase do seu tratamento com indicadores visuais claros e contagem de dias.",
+      icon: <Activity size={64} className="text-apple-activity" />,
+      color: "text-apple-activity"
+    },
+    {
+      title: "Gestão de Medicamentos",
+      description: "Receba lembretes e registre sua adesão. Nunca perca uma dose importante.",
+      icon: <Pill size={64} className="text-blue-500" />,
+      color: "text-blue-500"
+    },
+    {
+      title: "Registro de Sintomas",
+      description: "Monitore como você se sente diariamente. Dados precisos ajudam sua equipe médica.",
+      icon: <ClipboardCheck size={64} className="text-orange-500" />,
+      color: "text-orange-500"
+    },
+    {
+      title: "Compartilhamento Seguro",
+      description: "Mantenha sua família e médicos atualizados com o compartilhamento seguro de dados.",
+      icon: <Users size={64} className="text-purple-500" />,
+      color: "text-purple-500"
+    }
+  ];
+
+  const nextStep = () => {
+    if (step < steps.length - 1) {
+      setDirection(1);
+      setStep(s => s + 1);
+    } else {
+      onComplete();
+    }
+  };
+
+  const prevStep = () => {
+    if (step > 0) {
+      setDirection(-1);
+      setStep(s => s - 1);
+    }
+  };
+
+  const variants = {
+    enter: (direction: number) => ({
+      x: direction > 0 ? 300 : -300,
+      opacity: 0
+    }),
+    center: {
+      zIndex: 1,
+      x: 0,
+      opacity: 1
+    },
+    exit: (direction: number) => ({
+      zIndex: 0,
+      x: direction < 0 ? 300 : -300,
+      opacity: 0
+    })
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-white z-[200] flex flex-col overflow-hidden"
+    >
+      <div className="absolute top-12 right-8 z-[210]">
+        <button 
+          onClick={onComplete}
+          className="text-apple-text-muted font-bold text-sm bg-apple-background px-4 py-2 rounded-full active:scale-95 transition-transform"
+        >
+          Pular
+        </button>
+      </div>
+
+      <div className="flex-grow relative flex flex-col items-center justify-center p-8 text-center">
+        <AnimatePresence initial={false} custom={direction} mode="popLayout">
+          <motion.div
+            key={step}
+            custom={direction}
+            variants={variants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{
+              x: { type: "spring", stiffness: 300, damping: 30 },
+              opacity: { duration: 0.2 }
+            }}
+            drag="x"
+            dragConstraints={{ left: 0, right: 0 }}
+            dragElastic={1}
+            onDragEnd={(e, { offset, velocity }) => {
+              const swipe = Math.abs(offset.x) * velocity.x;
+              if (swipe < -10000) {
+                nextStep();
+              } else if (swipe > 10000) {
+                prevStep();
+              }
+            }}
+            className="flex flex-col items-center w-full cursor-grab active:cursor-grabbing"
+          >
+            <div className="mb-8 p-8 rounded-[40px] bg-apple-background shadow-inner">
+              {steps[step].icon}
+            </div>
+            <h1 className="text-3xl font-black tracking-tighter mb-4 text-apple-text-primary">
+              {steps[step].title}
+            </h1>
+            <p className="text-apple-text-secondary text-lg leading-relaxed max-w-xs mx-auto">
+              {steps[step].description}
+            </p>
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      <div className="p-8 pb-12 flex flex-col gap-4 bg-white z-10">
+        <div className="flex justify-center gap-2 mb-4">
+          {steps.map((_, i) => (
+            <div 
+              key={i} 
+              className={`h-1.5 rounded-full transition-all duration-300 ${
+                i === step ? 'w-8 bg-blue-500' : 'w-1.5 bg-apple-border'
+              }`} 
+            />
+          ))}
+        </div>
+        
+        <button 
+          onClick={nextStep}
+          className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform"
+        >
+          {step === steps.length - 1 ? "Começar Agora" : "Próximo"}
+        </button>
+        
+        {step > 0 && (
+          <button 
+            onClick={prevStep}
+            className="text-apple-text-muted font-semibold text-sm"
+          >
+            Voltar
+          </button>
+        )}
+      </div>
+    </motion.div>
+  );
+};
+
 const AppContent = () => {
   const { user, loading, addSample } = useHealth();
   const [activeTab, setActiveTab] = useState('summary');
   const [showProfile, setShowProfile] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (user) {
+      const onboardingDone = localStorage.getItem(`onboarding_${user.uid}`);
+      if (!onboardingDone) {
+        setShowOnboarding(true);
+      }
+    }
+  }, [user]);
+
+  const completeOnboarding = () => {
+    if (user) {
+      localStorage.setItem(`onboarding_${user.uid}`, 'true');
+      setShowOnboarding(false);
+    }
+  };
 
   // Add some mock data on first load for demo
   useEffect(() => {
@@ -900,34 +1608,40 @@ const AppContent = () => {
         const medsRef = collection(db, `users/${user.uid}/medications`);
         const cyclesRef = collection(db, `users/${user.uid}/treatment_cycles`);
         
-        // Check if data exists
-        const medsSnap = await getDocFromServer(doc(db, 'test', 'connection')); // Just a dummy check
-        
-        // We'll just add if they don't exist (simplified for demo)
+        // Check if data exists - simple check to avoid duplicates
         // In a real app, we'd check properly
-        await addDoc(medsRef, {
-          name: 'Dexametasona',
-          dosage: '4mg',
-          frequency: '1x ao dia',
-          instructions: 'Com comida',
-          isSOS: false,
-          active: true
-        });
-        await addDoc(medsRef, {
-          name: 'Ondansetrona',
-          dosage: '8mg',
-          frequency: 'Se necessário',
-          instructions: 'Indiferente',
-          isSOS: true,
-          active: true
-        });
-        await addDoc(cyclesRef, {
-          name: 'Quimioterapia Branca',
-          startDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-          totalDays: 21,
-          currentCycle: 2,
-          totalCycles: 6
-        });
+        try {
+          // We'll just add if they don't exist (simplified for demo)
+          await addDoc(medsRef, {
+            name: 'Dexametasona',
+            type: 'Comprimido',
+            intensity: '4',
+            unit: 'mg',
+            schedule: { frequency: 'Todos os Dias', times: ['08:00'] },
+            instructions: 'Com comida',
+            isSOS: false,
+            active: true
+          });
+          await addDoc(medsRef, {
+            name: 'Ondansetrona',
+            type: 'Comprimido',
+            intensity: '8',
+            unit: 'mg',
+            schedule: { frequency: 'Se necessário', times: [] },
+            instructions: 'Indiferente',
+            isSOS: true,
+            active: true
+          });
+          await addDoc(cyclesRef, {
+            name: 'Quimioterapia Branca',
+            startDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+            totalDays: 21,
+            currentCycle: 2,
+            totalCycles: 6
+          });
+        } catch (error) {
+          console.error("Error seeding data:", error);
+        }
       };
       
       seedData();
@@ -955,6 +1669,7 @@ const AppContent = () => {
   return (
     <div className="min-h-screen max-w-md mx-auto bg-apple-background apple-gradient-bg relative">
       <AnimatePresence>
+        {showOnboarding && <OnboardingView onComplete={completeOnboarding} />}
         {showProfile && <ProfileView onClose={() => setShowProfile(false)} />}
       </AnimatePresence>
 
@@ -986,21 +1701,40 @@ const AppContent = () => {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
           >
-            <BrowseView />
+            <BrowseView searchQuery={searchQuery} onSelectCategory={(cat) => {
+              if (cat === 'Medicamentos') setActiveTab('medications');
+            }} />
+          </motion.div>
+        )}
+        {activeTab === 'medications' && (
+          <motion.div
+            key="medications"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <MedicationsView onBack={() => setActiveTab('browse')} />
           </motion.div>
         )}
       </AnimatePresence>
 
       <QuickActionFAB />
-      <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
+      <BottomNav 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab} 
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+      />
     </div>
   );
 };
 
 export default function App() {
   return (
-    <HealthProvider>
-      <AppContent />
-    </HealthProvider>
+    <ErrorBoundary>
+      <HealthProvider>
+        <AppContent />
+      </HealthProvider>
+    </ErrorBoundary>
   );
 }
