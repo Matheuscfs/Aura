@@ -14,6 +14,9 @@ service cloud.firestore {
     function isValidDateString(dateStr) {
       return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
     }
+    function isValidSimpleDate(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
 
     // User Profile Validation
     function isValidUserProfile(data) {
@@ -65,9 +68,10 @@ service cloud.firestore {
     // Symptom Log Validation
     function isValidSymptomLog(data) {
       return data.keys().hasAll(['type', 'intensity', 'timestamp']) &&
-             data.type in ['Dor', 'Fadiga', 'Náusea', 'Neuropatia'] &&
-             data.intensity is number && data.intensity >= 1 && data.intensity <= 10 &&
+             data.type is string &&
+             data.intensity in ['Não Presente', 'Presente', 'Suave', 'Moderado', 'Grave'] &&
              isValidDateString(data.timestamp) &&
+             (!('endDate' in data) || isValidDateString(data.endDate)) &&
              (!('notes' in data) || data.notes is string);
     }
 
@@ -79,6 +83,23 @@ service cloud.firestore {
              data.totalDays is number &&
              data.currentCycle is number &&
              data.totalCycles is number;
+    }
+
+    // Exam Validation
+    function isValidExam(data) {
+      let requiredFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'timestamp'];
+      let allowedFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'analysis', 'timestamp'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.type is string &&
+             data.examName is string &&
+             data.doctorName is string &&
+             isValidSimpleDate(data.date) &&
+             data.fileData is string &&
+             data.fileType is string &&
+             isValidDateString(data.timestamp) &&
+             (!('analysis' in data) || data.analysis is string);
     }
 
     match /test/connection {
@@ -117,6 +138,12 @@ service cloud.firestore {
       match /treatment_cycles/{cycleId} {
         allow read: if isOwner(userId);
         allow write: if isOwner(userId) && isValidTreatmentCycle(request.resource.data);
+      }
+
+      match /exams/{examId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidExam(request.resource.data);
+        allow delete: if isOwner(userId);
       }
     }
   }

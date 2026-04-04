@@ -21,7 +21,7 @@
 
 @layer base {
   body {
-    @apply bg-apple-background text-apple-text-primary font-sans antialiased;
+    @apply bg-apple-background text-apple-text-primary font-sans antialiased overflow-x-hidden;
   }
 }
 
@@ -49,5 +49,10 @@
 
 .apple-section-header {
   @apply text-xl font-bold mb-2;
+}
+
+@keyframes shimmer {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 0; }
 }
 
