@@ -39,7 +39,7 @@ service cloud.firestore {
     // Medication Validation
     function isValidMedication(data) {
       let requiredFields = ['name', 'type', 'instructions', 'isSOS', 'active'];
-      let allowedFields = ['name', 'type', 'intensity', 'unit', 'shape', 'colors', 'schedule', 'duration', 'instructions', 'isSOS', 'active'];
+      let allowedFields = ['name', 'type', 'dosage', 'intensity', 'unit', 'shape', 'colors', 'schedule', 'duration', 'instructions', 'isSOS', 'active', 'archived', 'order'];
       
       return data.keys().hasAll(requiredFields) &&
              data.keys().hasOnly(allowedFields) &&
@@ -48,9 +48,12 @@ service cloud.firestore {
              data.instructions is string &&
              data.isSOS is bool &&
              data.active is bool &&
+             (!('dosage' in data) || data.dosage is string) &&
              (!('intensity' in data) || data.intensity is string) &&
              (!('unit' in data) || data.unit is string) &&
              (!('shape' in data) || data.shape is string) &&
+             (!('archived' in data) || data.archived is bool) &&
+             (!('order' in data) || data.order is number) &&
              (!('colors' in data) || (data.colors is map && data.colors.keys().hasAll(['left', 'right', 'background']))) &&
              (!('schedule' in data) || (data.schedule is map && data.schedule.keys().hasAll(['frequency', 'times']))) &&
              (!('duration' in data) || (data.duration is map && data.duration.keys().hasAll(['startDate'])));
@@ -88,7 +91,7 @@ service cloud.firestore {
     // Exam Validation
     function isValidExam(data) {
       let requiredFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'timestamp'];
-      let allowedFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'analysis', 'timestamp'];
+      let allowedFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'analysis', 'timestamp', 'metrics'];
       
       return data.keys().hasAll(requiredFields) &&
              data.keys().hasOnly(allowedFields) &&
@@ -99,7 +102,14 @@ service cloud.firestore {
              data.fileData is string &&
              data.fileType is string &&
              isValidDateString(data.timestamp) &&
-             (!('analysis' in data) || data.analysis is string);
+             (!('analysis' in data) || data.analysis is string) &&
+             (!('metrics' in data) || (data.metrics is list && data.metrics.size() <= 50));
+    }
+
+    // Pinned Settings Validation
+    function isValidPinnedSettings(data) {
+      return data.keys().hasOnly(['metrics']) &&
+             data.metrics is list;
     }
 
     match /test/connection {
@@ -122,7 +132,8 @@ service cloud.firestore {
 
       match /medications/{medId} {
         allow read: if isOwner(userId);
-        allow write: if isOwner(userId) && isValidMedication(request.resource.data);
+        allow create, update: if isOwner(userId) && isValidMedication(request.resource.data);
+        allow delete: if isOwner(userId);
       }
 
       match /medication_logs/{logId} {
@@ -144,6 +155,11 @@ service cloud.firestore {
         allow read: if isOwner(userId);
         allow create: if isOwner(userId) && isValidExam(request.resource.data);
         allow delete: if isOwner(userId);
+      }
+
+      match /settings/pinned {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidPinnedSettings(request.resource.data);
       }
     }
   }

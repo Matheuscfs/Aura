@@ -28,7 +28,13 @@ import {
   File,
   Loader2,
   Zap,
-  Calendar
+  Calendar,
+  Check,
+  Pin,
+  Menu,
+  Trash2,
+  GripVertical,
+  Archive
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -50,11 +56,17 @@ import {
   limit,
   getDocFromServer,
   doc,
-  deleteDoc
+  deleteDoc,
+  setDoc,
+  updateDoc,
+  writeBatch
 } from 'firebase/firestore';
 import { 
   LineChart, 
   Line, 
+  BarChart,
+  Bar,
+  Cell,
   ResponsiveContainer, 
   YAxis, 
   XAxis, 
@@ -87,6 +99,8 @@ interface Medication {
   instructions: string;
   isSOS: boolean;
   active: boolean;
+  archived?: boolean;
+  order?: number;
 }
 
 interface MedicationLog {
@@ -143,10 +157,15 @@ interface HealthContextType {
   loading: boolean;
   addSample: (type: string, value: number, unit: string) => Promise<void>;
   addMedication: (med: Omit<Medication, 'id'>) => Promise<void>;
-  addMedicationLog: (medId: string, name: string, status: 'Taken' | 'Skipped') => Promise<void>;
+  updateMedication: (id: string, med: Partial<Medication>) => Promise<void>;
+  deleteMedication: (id: string) => Promise<void>;
+  reorderMedications: (meds: Medication[]) => Promise<void>;
+  addMedicationLog: (medId: string, name: string, status: 'Taken' | 'Skipped', timestamp?: string) => Promise<void>;
   addSymptomLog: (type: string, intensity: SymptomLog['intensity'], timestamp?: string, endDate?: string, notes?: string) => Promise<void>;
   addExam: (exam: Omit<Exam, 'id'>) => Promise<void>;
   deleteExam: (id: string) => Promise<void>;
+  pinnedMetrics: string[];
+  togglePinnedMetric: (metric: string) => Promise<void>;
 }
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
@@ -200,6 +219,38 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+};
+
+const compressImage = (base64: string, mimeType: string, maxWidth = 1200, maxHeight = 1200, quality = 0.7): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.src = `data:${mimeType};base64,${base64}`;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      const compressedBase64 = canvas.toDataURL(mimeType, quality).split(',')[1];
+      resolve(compressedBase64);
+    };
+    img.onerror = (err) => reject(err);
+  });
 };
 
 const analyzeExam = async (fileData: string, fileType: string) => {
@@ -317,6 +368,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [symptomLogs, setSymptomLogs] = useState<SymptomLog[]>([]);
   const [cycles, setCycles] = useState<TreatmentCycle[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [pinnedMetrics, setPinnedMetrics] = useState<string[]>(['steps', 'heart_rate', 'temperature', 'tumor_size']);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -343,7 +395,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setSamples(s.docs.map(d => ({ id: d.id, ...d.data() })) as HealthSample[]);
     }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/health_samples`));
 
-    const unsubMeds = onSnapshot(collection(db, `users/${user.uid}/medications`), (s) => {
+    const unsubMeds = onSnapshot(query(collection(db, `users/${user.uid}/medications`), orderBy('order', 'asc')), (s) => {
       setMedications(s.docs.map(d => ({ id: d.id, ...d.data() })) as Medication[]);
     }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/medications`));
 
@@ -363,6 +415,12 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setExams(s.docs.map(d => ({ id: d.id, ...d.data() })) as Exam[]);
     }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/exams`));
 
+    const unsubPinned = onSnapshot(doc(db, `users/${user.uid}/settings`, 'pinned'), (doc) => {
+      if (doc.exists()) {
+        setPinnedMetrics(doc.data().metrics || []);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/settings/pinned`));
+
     return () => {
       unsubSamples();
       unsubMeds();
@@ -370,6 +428,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       unsubSymptoms();
       unsubCycles();
       unsubExams();
+      unsubPinned();
     };
   }, [user]);
 
@@ -389,18 +448,53 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!user) return;
     const path = `users/${user.uid}/medications`;
     try {
-      await addDoc(collection(db, path), med);
+      const currentMaxOrder = medications.length > 0 ? Math.max(...medications.map(m => m.order || 0)) : 0;
+      await addDoc(collection(db, path), { ...med, order: currentMaxOrder + 1 });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
   };
 
-  const addMedicationLog = async (medicationId: string, medicationName: string, status: 'Taken' | 'Skipped') => {
+  const updateMedication = async (id: string, med: Partial<Medication>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/medications/${id}`;
+    try {
+      await updateDoc(doc(db, path), med);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const deleteMedication = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/medications/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
+  const reorderMedications = async (meds: Medication[]) => {
+    if (!user) return;
+    const batch = writeBatch(db);
+    try {
+      meds.forEach((med, index) => {
+        const ref = doc(db, `users/${user.uid}/medications/${med.id}`);
+        batch.update(ref, { order: index });
+      });
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/medications`);
+    }
+  };
+
+  const addMedicationLog = async (medicationId: string, medicationName: string, status: 'Taken' | 'Skipped', timestamp?: string) => {
     if (!user) return;
     const path = `users/${user.uid}/medication_logs`;
     try {
       await addDoc(collection(db, path), {
-        medicationId, medicationName, status, timestamp: new Date().toISOString(),
+        medicationId, medicationName, status, timestamp: timestamp || new Date().toISOString(),
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
@@ -443,10 +537,24 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const togglePinnedMetric = async (metric: string) => {
+    if (!user) return;
+    const newPinned = pinnedMetrics.includes(metric)
+      ? pinnedMetrics.filter(m => m !== metric)
+      : [...pinnedMetrics, metric];
+    
+    const path = `users/${user.uid}/settings/pinned`;
+    try {
+      await setDoc(doc(db, `users/${user.uid}/settings`, 'pinned'), { metrics: newPinned });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
   return (
     <HealthContext.Provider value={{ 
-      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, loading, 
-      addSample, addMedication, addMedicationLog, addSymptomLog, addExam, deleteExam 
+      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, loading, pinnedMetrics,
+      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, togglePinnedMetric 
     }}>
       {children}
     </HealthContext.Provider>
@@ -925,13 +1033,33 @@ const QuickActionFAB: React.FC = () => {
   );
 };
 
-const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam }: { 
+const ALL_METRICS = [
+  { id: 'steps', name: 'Atividade', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
+  { id: 'heart_rate', name: 'Batimentos', category: 'Sinais vitais', icon: <Heart size={18} />, color: '#FF3B30' },
+  { id: 'temperature', name: 'Temperatura', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'tumor_size', name: 'Evolução do Tumor', category: 'Exames', icon: <Activity size={18} />, color: '#5E5CE6' },
+  { id: 'Plaquetas', name: 'Plaquetas', category: 'Exames', icon: <FileText size={18} />, color: '#007AFF' },
+  { id: 'Leucócitos', name: 'Leucócitos', category: 'Exames', icon: <FileText size={18} />, color: '#34C759' },
+  { id: 'Hemoglobina', name: 'Hemoglobina', category: 'Exames', icon: <FileText size={18} />, color: '#FF3B30' },
+  { id: 'Vômito', name: 'Vômito', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Náusea', name: 'Náusea', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Fadiga', name: 'Fadiga', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Dor de Cabeça', name: 'Dor de Cabeça', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Diarreia', name: 'Diarreia', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Constipação', name: 'Constipação', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Falta de Apetite', name: 'Falta de Apetite', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'Alterações de Sono', name: 'Alterações de Sono', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
+];
+
+const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory }: { 
   onOpenProfile: () => void, 
   onSelectCategory: (cat: string) => void,
   onSelectTab: (tab: string) => void,
-  onSelectExam: (exam: Exam) => void
+  onSelectExam: (exam: Exam) => void,
+  onOpenEditPinned: () => void,
+  onOpenSymptomHistory: () => void
 }) => {
-  const { samples, user, cycles, medications, medicationLogs, exams, symptomLogs } = useHealth();
+  const { samples, user, cycles, medications, medicationLogs, exams, symptomLogs, pinnedMetrics } = useHealth();
   
   const getLatest = (type: string) => {
     const filtered = samples.filter(s => s.type === type);
@@ -983,7 +1111,7 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
         
         return (
           <div 
-            onClick={() => onSelectCategory('Acompanhamento de Ciclo de Quimioterapia')}
+            onClick={() => onSelectCategory('Ciclo de quimioterapia')}
             className="apple-card p-6 mb-8 relative overflow-hidden cursor-pointer active:scale-[0.98] transition-transform"
           >
             {/* Background Accent */}
@@ -1064,72 +1192,90 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
       <div className="mb-8">
         <div className="flex justify-between items-end mb-4">
           <h2 className="apple-section-header mb-0">Fixados</h2>
-          <button className="text-blue-500 font-medium text-sm">Editar</button>
+          <button onClick={onOpenEditPinned} className="text-blue-500 font-medium text-sm">Editar</button>
         </div>
         
-        {temp && (
-          <MetricCard 
-            title="Temperatura" 
-            value={temp.value.toFixed(1)} 
-            unit="°C" 
-            icon={<Activity />} 
-            color={temp.value > 37.8 ? "#FF3B30" : "#FF9500"}
-            lastUpdated={new Date(temp.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            subtitle={temp.value > 37.8 ? "Febre detectada" : "Normal"}
-            onClick={() => onSelectCategory('Sinais Vitais')}
-          />
-        )}
+        <div className="space-y-4">
+          {pinnedMetrics.map(metricId => {
+            const metricDef = ALL_METRICS.find(m => m.id === metricId);
+            if (!metricDef) return null;
 
-        <MetricCard 
-          title="Atividade" 
-          value={steps?.value.toLocaleString() || "0"} 
-          unit="passos" 
-          icon={<Activity />} 
-          color="#FF2D55"
-          data={getHistory('steps')}
-          lastUpdated={steps ? new Date(steps.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "00:00"}
-          onClick={() => onSelectCategory('Atividade')}
-        />
-        
-        <MetricCard 
-          title="Batimentos" 
-          value={heartRate?.value || "--"} 
-          unit="BPM" 
-          icon={<Heart />} 
-          color="#FF3B30"
-          data={getHistory('heart_rate')}
-          lastUpdated={heartRate ? new Date(heartRate.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined}
-          onClick={() => onSelectCategory('Coração')}
-        />
+            if (metricDef.category === 'Sintomas') {
+              const latestSymptom = symptomLogs.find(s => s.type === metricDef.name);
+              return (
+                <div 
+                  key={metricId}
+                  onClick={() => onSelectCategory('Sintomas')}
+                  className="apple-card p-4 flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform"
+                >
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${metricDef.color}15`, color: metricDef.color }}>
+                    {metricDef.icon}
+                  </div>
+                  <div className="flex-grow">
+                    <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-0.5">{metricDef.name}</p>
+                    <p className="font-bold text-apple-text-primary">
+                      {latestSymptom ? latestSymptom.intensity : 'Nenhum registro'}
+                    </p>
+                  </div>
+                  {latestSymptom && (
+                    <div className="text-right">
+                      <p className="text-[10px] font-bold text-apple-text-muted">
+                        {new Date(latestSymptom.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}
+                      </p>
+                    </div>
+                  )}
+                  <ChevronRight size={16} className="text-apple-text-muted ml-1" />
+                </div>
+              );
+            }
 
-        {(platelets || leukocytes || hemoglobin) && (
-          <div className="mt-8">
-            <h2 className="apple-section-header mb-4">Hemograma</h2>
-            <div className="grid grid-cols-2 gap-4">
-              {platelets && (
-                <div className="apple-card p-4 cursor-pointer active:scale-95 transition-transform" onClick={() => onSelectCategory('Sinais Vitais')}>
-                  <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1">Plaquetas</p>
-                  <p className="text-xl font-black text-blue-500">{platelets.value.toLocaleString()}</p>
-                  <p className="text-[10px] text-apple-text-muted">mil/mm³</p>
+            const latest = getLatest(metricId);
+            if (metricId === 'tumor_size') {
+              return (
+                <MetricCard 
+                  key={metricId}
+                  title="Evolução do Tumor" 
+                  value={latest?.value || "--"} 
+                  unit="mm" 
+                  icon={<Activity />} 
+                  color="#5E5CE6"
+                  data={getHistory('tumor_size')}
+                  subtitle={latest ? `A última medição foi de ${latest.value}mm em ${new Date(latest.timestamp).toLocaleDateString()}.` : "Nenhum dado registrado ainda."}
+                  lastUpdated={latest ? "Ontem" : undefined}
+                  onClick={() => onSelectCategory('Exames')}
+                />
+              );
+            }
+
+            if (metricId === 'Plaquetas' || metricId === 'Leucócitos' || metricId === 'Hemoglobina') {
+              return (
+                <div 
+                  key={metricId}
+                  className="apple-card p-4 cursor-pointer active:scale-95 transition-transform" 
+                  onClick={() => onSelectCategory('Sinais vitais')}
+                >
+                  <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1">{metricDef.name}</p>
+                  <p className="text-xl font-black" style={{ color: metricDef.color }}>{latest?.value.toLocaleString() || '--'}</p>
+                  <p className="text-[10px] text-apple-text-muted">{latest?.unit || ''}</p>
                 </div>
-              )}
-              {leukocytes && (
-                <div className="apple-card p-4 cursor-pointer active:scale-95 transition-transform" onClick={() => onSelectCategory('Sinais Vitais')}>
-                  <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1">Leucócitos</p>
-                  <p className="text-xl font-black text-green-500">{leukocytes.value.toLocaleString()}</p>
-                  <p className="text-[10px] text-apple-text-muted">/mm³</p>
-                </div>
-              )}
-              {hemoglobin && (
-                <div className="apple-card p-4 cursor-pointer active:scale-95 transition-transform" onClick={() => onSelectCategory('Sinais Vitais')}>
-                  <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1">Hemoglobina</p>
-                  <p className="text-xl font-black text-red-500">{hemoglobin.value}</p>
-                  <p className="text-[10px] text-apple-text-muted">g/dL</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+              );
+            }
+
+            return (
+              <MetricCard 
+                key={metricId}
+                title={metricDef.name} 
+                value={latest?.value.toLocaleString() || (metricId === 'temperature' ? "0.0" : "0")} 
+                unit={latest?.unit || (metricId === 'steps' ? 'passos' : metricId === 'heart_rate' ? 'BPM' : '°C')} 
+                icon={metricDef.icon} 
+                color={metricDef.color}
+                data={getHistory(metricId)}
+                lastUpdated={latest ? new Date(latest.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined}
+                onClick={() => onSelectCategory(metricDef.category)}
+              />
+            );
+          })}
+        </div>
       </div>
 
       <div className="mb-8">
@@ -1165,10 +1311,17 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
       </div>
 
       <div className="mb-8">
-        <h2 className="apple-section-header">Sintomas Recentes</h2>
+        <div className="flex justify-between items-end mb-4">
+          <h2 className="apple-section-header mb-0">Sintomas Recentes</h2>
+          <button onClick={onOpenSymptomHistory} className="text-blue-500 font-medium text-sm">Ver Tudo</button>
+        </div>
         <div className="space-y-3">
           {symptomLogs.slice(0, 2).map(log => (
-            <div key={log.id} className="apple-card p-4 flex items-center gap-4">
+            <div 
+              key={log.id} 
+              onClick={onOpenSymptomHistory}
+              className="apple-card p-4 flex items-center gap-4 cursor-pointer active:bg-apple-background transition-colors"
+            >
               <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center text-orange-500">
                 <Activity size={20} />
               </div>
@@ -1216,24 +1369,470 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
 
       <div className="mb-8">
         <h2 className="apple-section-header">Destaques</h2>
-        <MetricCard 
-          title="Evolução do Tumor" 
-          value={tumorSize?.value || "--"} 
-          unit="mm" 
-          icon={<Activity />} 
-          color="#5E5CE6"
-          data={getHistory('tumor_size')}
-          subtitle={tumorSize ? `A última medição foi de ${tumorSize.value}mm em ${new Date(tumorSize.timestamp).toLocaleDateString()}.` : "Nenhum dado registrado ainda."}
-          lastUpdated={tumorSize ? "Ontem" : undefined}
-        />
+        {!pinnedMetrics.includes('tumor_size') && (
+          <MetricCard 
+            title="Evolução do Tumor" 
+            value={tumorSize?.value || "--"} 
+            unit="mm" 
+            icon={<Activity />} 
+            color="#5E5CE6"
+            data={getHistory('tumor_size')}
+            subtitle={tumorSize ? `A última medição foi de ${tumorSize.value}mm em ${new Date(tumorSize.timestamp).toLocaleDateString()}.` : "Nenhum dado registrado ainda."}
+            lastUpdated={tumorSize ? "Ontem" : undefined}
+          />
+        )}
       </div>
     </div>
   );
 };
 
+const MedicationLogModal: React.FC<{ 
+  medication: Medication, 
+  time: string, 
+  onClose: () => void,
+  onLog: (status: 'Taken' | 'Skipped') => void,
+  lastLog?: MedicationLog
+}> = ({ medication, time, onClose, onLog, lastLog }) => {
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      className="fixed inset-0 bg-white z-[200] flex flex-col"
+    >
+      <div className="p-5 flex justify-between items-center">
+        <button onClick={onClose} className="text-black">
+          <X size={32} />
+        </button>
+        <h2 className="text-lg font-bold">
+          {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'short' })}
+        </h2>
+        <div className="w-8" />
+      </div>
+
+      <div className="flex-grow min-h-0 overflow-y-auto flex flex-col items-center px-8 pt-12">
+        <div className="text-cyan-400 mb-8">
+          <Pill size={64} className="rotate-45" />
+        </div>
+        
+        <h1 className="text-4xl font-bold text-center mb-12 leading-tight">
+          Medicamento às {time}
+        </h1>
+
+        <button className="text-blue-500 font-semibold text-lg mb-12">
+          Registrar Todos como Tomados
+        </button>
+
+        <div className="w-full flex items-center gap-4 mb-12">
+          <div className="w-20 h-20 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-lg overflow-hidden">
+            <div className="rotate-45 flex scale-150">
+              <div className="w-4 h-3 rounded-l-full" style={{ backgroundColor: medication.colors?.left }} />
+              <div className="w-4 h-3 rounded-r-full" style={{ backgroundColor: medication.colors?.right }} />
+            </div>
+          </div>
+          <div className="flex-grow">
+            <h3 className="text-2xl font-bold">{medication.name}</h3>
+            <p className="text-apple-text-secondary text-lg">{medication.type}, {medication.intensity} {medication.unit}</p>
+            {lastLog && lastLog.status === 'Taken' && (
+              <div className="flex items-center gap-1 text-blue-500 font-medium mt-1">
+                <span>1 aplicação, à {new Date(lastLog.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <ChevronRight size={16} />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="w-full space-y-4">
+          <button 
+            onClick={() => onLog('Skipped')}
+            className="w-full py-4 rounded-2xl bg-cyan-50 text-cyan-600 font-bold text-xl active:scale-95 transition-transform"
+          >
+            Não Tomado
+          </button>
+          <button 
+            onClick={() => onLog('Taken')}
+            className="w-full py-4 rounded-2xl bg-cyan-50 text-cyan-600 font-bold text-xl active:scale-95 transition-transform"
+          >
+            Tomado
+          </button>
+        </div>
+      </div>
+
+      <div className="p-8">
+        <button 
+          onClick={onClose}
+          className="w-full py-4 rounded-full bg-apple-border text-black font-bold text-xl active:scale-95 transition-transform"
+        >
+          OK
+        </button>
+      </div>
+    </motion.div>
+  );
+};
+
+const MedicationDetailView: React.FC<{
+  medication: Medication,
+  logs: MedicationLog[],
+  onClose: () => void,
+  onUpdate: (id: string, data: Partial<Medication>) => Promise<void>,
+  onDelete: (id: string) => Promise<void>,
+  onArchive: (id: string) => Promise<void>,
+  onLog: (status: 'Taken' | 'Skipped') => Promise<void>
+}> = ({ medication, logs, onClose, onUpdate, onDelete, onArchive, onLog }) => {
+  const [activeRange, setActiveRange] = useState('S'); // D, S, M, 6 M, A
+  
+  // Filter logs for the last 7 days for the chart
+  const last7Days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    return d;
+  });
+
+  const chartData = last7Days.map(date => {
+    const dayLogs = logs.filter(l => new Date(l.timestamp).toDateString() === date.toDateString());
+    const takenCount = dayLogs.filter(l => l.status === 'Taken').length;
+    return {
+      name: date.toLocaleDateString('pt-BR', { weekday: 'short' }).toLowerCase().replace('.', ''),
+      taken: takenCount,
+      date: date
+    };
+  });
+
+  const averageTaken = logs.length > 0 ? (logs.filter(l => l.status === 'Taken').length / 7).toFixed(1) : 0;
+  const averageSkipped = logs.length > 0 ? (logs.filter(l => l.status === 'Skipped').length / 7).toFixed(1) : 0;
+  
+  const startDate = last7Days[0].toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' });
+  const endDate = last7Days[6].toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
+  const dateRangeStr = `${startDate} — ${endDate}`;
+  const todayLogs = logs.filter(l => new Date(l.timestamp).toDateString() === new Date().toDateString());
+
+  return (
+    <motion.div 
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      className="fixed inset-0 bg-white z-[200] flex flex-col"
+    >
+      {/* Header */}
+      <div className="p-5 flex items-center justify-between sticky top-0 bg-white z-10">
+        <button onClick={onClose} className="text-blue-500">
+          <ChevronLeft size={32} />
+        </button>
+        <h2 className="text-xl font-bold">{medication.name}</h2>
+        <div className="w-8" />
+      </div>
+
+      <div className="flex-grow min-h-0 overflow-y-auto">
+        {/* Time Range Selector */}
+        <div className="px-5 mb-8">
+          <div className="flex justify-between bg-apple-background p-1 rounded-xl">
+            {['D', 'S', 'M', '6 M', 'A'].map(range => (
+              <button
+                key={range}
+                onClick={() => setActiveRange(range)}
+                className={`flex-grow py-1.5 text-sm font-bold rounded-lg transition-all ${activeRange === range ? 'bg-white shadow-sm' : 'text-apple-text-muted'}`}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Summary Stats */}
+        <div className="px-5 mb-6">
+          <div className="flex gap-8 mb-2">
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <div className="w-2 h-2 rounded-full bg-cyan-400" />
+                <span className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider">MÉDIA DIÁRIA TOMADO</span>
+              </div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-4xl font-bold">{averageTaken}</span>
+                <span className="text-apple-text-muted font-medium">aplicação</span>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <div className="w-2 h-2 rounded-full bg-apple-border" />
+                <span className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider">MÉDIA DIÁRIA NÃO TOMADO</span>
+              </div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-4xl font-bold">{averageSkipped}</span>
+                <span className="text-apple-text-muted font-medium">aplicação</span>
+              </div>
+            </div>
+          </div>
+          <p className="text-apple-text-muted text-sm font-medium">
+            {dateRangeStr}
+          </p>
+        </div>
+
+        {/* Chart */}
+        <div className="h-64 px-2 mb-12">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <XAxis 
+                dataKey="name" 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#8E8E93', fontSize: 12, fontWeight: 500 }}
+                dy={10}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#8E8E93', fontSize: 12, fontWeight: 500 }}
+                domain={[0, 6]}
+                ticks={[0, 2, 4, 6]}
+              />
+              <Bar dataKey="taken" radius={[4, 4, 0, 0]} barSize={32}>
+                {chartData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.taken > 0 ? '#00E2FF' : '#F2F2F7'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Registro de Hoje */}
+        <div className="px-5 mb-12">
+          <h3 className="text-3xl font-bold mb-6">Registro de Hoje</h3>
+          <div className="space-y-6">
+            {todayLogs.map((log, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm overflow-hidden">
+                    <div className="rotate-45 flex">
+                      <div className="w-3 h-2 rounded-l-full" style={{ backgroundColor: medication.colors?.left }} />
+                      <div className="w-3 h-2 rounded-r-full" style={{ backgroundColor: medication.colors?.right }} />
+                    </div>
+                  </div>
+                  <span className="text-2xl font-bold">
+                    {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <button className="text-blue-500">
+                  <Plus size={28} strokeWidth={2.5} />
+                </button>
+              </div>
+            ))}
+            <div className="flex items-center justify-between pt-4">
+              <span className="text-xl font-medium">Registrar Nova Dose</span>
+              <button onClick={() => onLog('Taken')} className="text-blue-500">
+                <Plus size={28} strokeWidth={2.5} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Horários */}
+        <div className="px-5 mb-12">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-3xl font-bold">Horários</h3>
+            <button className="text-blue-500 font-medium text-lg">Editar</button>
+          </div>
+          <div className="space-y-2">
+            <p className="text-xl font-bold">{medication.schedule?.frequency}</p>
+            {medication.schedule?.times.map((time, i) => (
+              <p key={i} className="text-xl font-medium text-apple-text-secondary">
+                {time} <span className="text-apple-text-muted ml-2">1 aplicação</span>
+              </p>
+            ))}
+          </div>
+          <button className="text-blue-500 font-medium text-lg mt-6">Editar</button>
+        </div>
+
+        {/* Detalhes */}
+        <div className="px-5 mb-12">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-3xl font-bold">Detalhes</h3>
+            <button className="text-blue-500 font-medium text-lg">Editar</button>
+          </div>
+          <div className="flex flex-col items-start gap-4">
+            <div 
+              className="w-24 h-24 rounded-3xl flex items-center justify-center relative overflow-hidden shadow-sm"
+              style={{ background: `linear-gradient(135deg, ${medication.colors?.background || '#F2F2F7'} 0%, #FFFFFF 100%)` }}
+            >
+              <div className="relative flex items-center justify-center rotate-45">
+                <div 
+                  className="w-12 h-6 rounded-l-full shadow-sm" 
+                  style={{ backgroundColor: medication.colors?.left || '#FF3B30' }} 
+                />
+                <div 
+                  className="w-12 h-6 rounded-r-full shadow-sm" 
+                  style={{ backgroundColor: medication.colors?.right || '#FF9500' }} 
+                />
+              </div>
+            </div>
+            <div>
+              <h4 className="text-2xl font-bold">{medication.name}</h4>
+              <p className="text-apple-text-secondary text-lg">{medication.type}</p>
+              <p className="text-apple-text-secondary text-lg">{medication.intensity} {medication.unit}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Sobre */}
+        <div className="px-5 mb-12">
+          <h3 className="text-3xl font-bold mb-6">Sobre</h3>
+          <div className="space-y-2">
+            <p className="text-xl font-bold">Efeitos Colaterais</p>
+            <p className="text-xl font-medium text-apple-text-muted">Nenhuma informação disponível</p>
+          </div>
+        </div>
+
+        {/* Opções */}
+        <div className="px-5 mb-12">
+          <h3 className="text-3xl font-bold mb-6">Opções</h3>
+          <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border mb-12">
+            <div className="p-4 flex justify-between items-center active:bg-apple-background transition-colors cursor-pointer">
+              <span className="text-lg font-medium">Mostrar Todos os Dados</span>
+              <ChevronRight size={20} className="text-apple-text-muted" />
+            </div>
+            <div className="p-4 flex justify-between items-center active:bg-apple-background transition-colors cursor-pointer">
+              <span className="text-lg font-medium">Fontes de Dados e Acesso</span>
+              <ChevronRight size={20} className="text-apple-text-muted" />
+            </div>
+          </div>
+          
+          <div className="space-y-8">
+            <button 
+              onClick={() => onArchive(medication.id)}
+              className="text-blue-500 font-medium text-xl block"
+            >
+              Arquivar Medicamento
+            </button>
+            <button 
+              onClick={() => onDelete(medication.id)}
+              className="text-red-500 font-medium text-xl block"
+            >
+              Apagar Medicamento
+            </button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+const EditMedicationListView: React.FC<{ 
+  medications: Medication[], 
+  onClose: () => void,
+  onUpdate: (id: string, data: Partial<Medication>) => void,
+  onDelete: (id: string) => void,
+  onReorder: (meds: Medication[]) => void,
+  onAdd: () => void
+}> = ({ medications, onClose, onUpdate, onDelete, onReorder, onAdd }) => {
+  const activeMeds = medications.filter(m => !m.archived);
+  const archivedMeds = medications.filter(m => m.archived);
+
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      className="fixed inset-0 bg-white z-[200] flex flex-col"
+    >
+      <div className="p-5 flex justify-between items-center">
+        <div className="w-8" />
+        <h2 className="text-lg font-bold">Editar Lista de Medicamentos</h2>
+        <button onClick={onClose} className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white shadow-sm">
+          <Check size={24} />
+        </button>
+      </div>
+
+      <div className="flex-grow min-h-0 overflow-y-auto px-5 pt-8">
+        <button 
+          onClick={onAdd}
+          className="text-blue-500 font-medium text-lg mb-10 block"
+        >
+          Adicionar Medicamento
+        </button>
+
+        <div className="mb-10">
+          <h3 className="text-apple-text-muted font-bold text-lg mb-6">Medicamentos Atuais</h3>
+          <div className="space-y-6">
+            {activeMeds.map((m, i) => (
+              <div key={m.id} className="flex items-center gap-4">
+                <button 
+                  onClick={() => onUpdate(m.id, { archived: true })}
+                  className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center text-white shadow-sm"
+                >
+                  <Archive size={16} />
+                </button>
+                <div className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm overflow-hidden">
+                  <div className="rotate-45 flex">
+                    <div className="w-3 h-2 rounded-l-full" style={{ backgroundColor: m.colors?.left }} />
+                    <div className="w-3 h-2 rounded-r-full" style={{ backgroundColor: m.colors?.right }} />
+                  </div>
+                </div>
+                <div className="flex-grow">
+                  <h4 className="font-bold text-lg">{m.name}</h4>
+                  <p className="text-apple-text-secondary">{m.type}, {m.intensity} {m.unit}</p>
+                </div>
+                <div className="text-apple-text-muted">
+                  <GripVertical size={24} />
+                </div>
+              </div>
+            ))}
+            {activeMeds.length === 0 && (
+              <p className="text-apple-text-muted italic">Nenhum medicamento ativo.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="mb-10">
+          <h3 className="text-apple-text-muted font-bold text-lg mb-6">Medicamentos Arquivados</h3>
+          <div className="space-y-6">
+            {archivedMeds.map((m, i) => (
+              <div key={m.id} className="flex items-center gap-4 opacity-60">
+                <button 
+                  onClick={() => onDelete(m.id)}
+                  className="w-8 h-8 rounded-lg bg-red-500 flex items-center justify-center text-white shadow-sm"
+                >
+                  <Trash2 size={16} />
+                </button>
+                <div className="w-12 h-12 rounded-full bg-apple-border flex items-center justify-center text-white shadow-sm overflow-hidden">
+                  <div className="rotate-45 flex">
+                    <div className="w-3 h-2 rounded-l-full" style={{ backgroundColor: m.colors?.left }} />
+                    <div className="w-3 h-2 rounded-r-full" style={{ backgroundColor: m.colors?.right }} />
+                  </div>
+                </div>
+                <div className="flex-grow">
+                  <h4 className="font-bold text-lg">{m.name}</h4>
+                  <p className="text-apple-text-secondary">{m.type}, {m.intensity} {m.unit}</p>
+                </div>
+                <button 
+                  onClick={() => onUpdate(m.id, { archived: false })}
+                  className="text-blue-500 font-bold"
+                >
+                  Restaurar
+                </button>
+              </div>
+            ))}
+            {archivedMeds.length === 0 && (
+              <div className="apple-card p-6 text-center text-apple-text-muted">
+                Nenhum
+              </div>
+            )}
+          </div>
+        </div>
+
+        <p className="text-sm text-apple-text-muted leading-relaxed">
+          Os medicamentos arquivados não aparecerão na lista de medicamentos nem nos horários e não poderão ser adicionados aos favoritos.
+        </p>
+      </div>
+    </motion.div>
+  );
+};
+
 const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { medications, addMedication } = useHealth();
+  const { medications, addMedication, addMedicationLog, medicationLogs, updateMedication, deleteMedication, reorderMedications } = useHealth();
   const [showAddFlow, setShowAddFlow] = useState(false);
+  const [showEditList, setShowEditList] = useState(false);
+  const [selectedMedicationDetails, setSelectedMedicationDetails] = useState<Medication | null>(null);
+  const [selectedLogMedication, setSelectedLogMedication] = useState<{ med: Medication, time: string } | null>(null);
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<Partial<Medication>>({
     name: '',
@@ -1258,6 +1857,44 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     setStep(1);
   };
 
+  const getDaysOfWeek = () => {
+    const days = [];
+    const start = new Date(selectedDate);
+    start.setDate(selectedDate.getDate() - 3);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  };
+
+  const days = getDaysOfWeek();
+  const dayNames = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+  const MedicationIcon = ({ colors, shape, size = "md" }: { colors?: Medication['colors'], shape?: string, size?: "sm" | "md" | "lg" }) => {
+    const s = size === "sm" ? "w-10 h-10" : size === "lg" ? "w-24 h-24" : "w-16 h-16";
+    const iconSize = size === "sm" ? 20 : size === "lg" ? 48 : 32;
+    
+    return (
+      <div 
+        className={`${s} rounded-3xl flex items-center justify-center relative overflow-hidden shadow-sm`}
+        style={{ background: `linear-gradient(135deg, ${colors?.background || '#F2F2F7'} 0%, #FFFFFF 100%)` }}
+      >
+        <div className="relative flex items-center justify-center rotate-45">
+          <div 
+            className="w-8 h-4 rounded-l-full shadow-sm" 
+            style={{ backgroundColor: colors?.left || '#FF3B30' }} 
+          />
+          <div 
+            className="w-8 h-4 rounded-r-full shadow-sm" 
+            style={{ backgroundColor: colors?.right || '#FF9500' }} 
+          />
+        </div>
+      </div>
+    );
+  };
+
   if (showAddFlow) {
     return (
       <motion.div 
@@ -1272,16 +1909,18 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </button>
           <div className="text-center">
             <p className="text-xs font-bold text-apple-text-secondary uppercase tracking-widest">
-              {formData.name || 'Novo Medicamento'}
+              {step}
             </p>
-            {formData.type && <p className="text-[10px] text-apple-text-muted">{formData.type}</p>}
+            <p className="text-[10px] text-apple-text-muted">
+              {formData.intensity || '1'} {formData.unit || 'Cápsula'}, {formData.type || '1%'}
+            </p>
           </div>
           <button onClick={() => setShowAddFlow(false)} className="text-apple-text-muted">
             <X size={24} />
           </button>
         </div>
 
-        <div className="flex-grow overflow-y-auto p-6">
+        <div className="flex-grow min-h-0 overflow-y-auto p-6">
           <AnimatePresence mode="wait">
             {step === 1 && (
               <motion.div key="step1" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
@@ -1417,65 +2056,71 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
             {step === 6 && (
               <motion.div key="step6" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-                <h2 className="text-2xl font-bold mb-8">Defina Horários</h2>
-                <div className="apple-card p-4 mb-8">
-                  <div className="flex justify-between items-center mb-4">
-                    <span className="font-semibold">Quando você tomará?</span>
-                  </div>
-                  <div className="flex justify-between items-center bg-apple-background p-4 rounded-xl">
-                    <span className="font-medium">Todos os Dias</span>
-                    <button className="text-blue-500 font-bold">Alterar</button>
+                <h2 className="text-3xl font-bold mb-8">Defina Horários</h2>
+                
+                <div className="mb-8">
+                  <p className="font-bold text-lg mb-4">Quando você tomará?</p>
+                  <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-apple-border">
+                    <span className="text-lg font-medium">Todos os Dias</span>
+                    <button className="text-blue-500 font-semibold">Alterar</button>
                   </div>
                 </div>
-                <div className="apple-card p-4">
-                  <p className="font-bold mb-4">Que horas?</p>
-                  <div className="flex items-center gap-4 bg-apple-background p-3 rounded-xl mb-4">
-                    <div className="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white">
-                      <X size={14} strokeWidth={4} />
+                <div className="mb-8">
+                  <p className="font-bold text-lg mb-4">Que horas?</p>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-apple-border">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-red-500 rounded-full flex items-center justify-center text-white">
+                          <X size={16} strokeWidth={3} />
+                        </div>
+                        <div className="bg-apple-background px-4 py-2 rounded-xl">
+                          <span className="text-xl font-bold">01:55</span>
+                        </div>
+                      </div>
+                      <span className="text-blue-500 font-semibold">1 cápsula</span>
                     </div>
-                    <span className="font-bold text-lg">08:00</span>
-                    <span className="ml-auto text-blue-500 font-medium">1 aplicação</span>
+                    
+                    <button className="flex items-center gap-3 text-blue-500 font-bold px-1">
+                      <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white">
+                        <Plus size={18} strokeWidth={3} />
+                      </div>
+                      <span className="text-lg">Adicione um Horário</span>
+                    </button>
                   </div>
-                  <button className="flex items-center gap-2 text-blue-500 font-bold">
-                    <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-white">
-                      <Plus size={14} strokeWidth={4} />
-                    </div>
-                    Adicione um Horário
-                  </button>
                 </div>
-                <p className="text-xs text-apple-text-muted mt-6 px-2">
+                <p className="text-sm text-apple-text-muted mb-10 leading-relaxed">
                   Se você agendar um horário, o app Saúde enviará uma notificação para você tomar os seus medicamentos.
                 </p>
-                <button onClick={handleNext} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl mt-8">Seguinte</button>
-              </motion.div>
-            )}
 
-            {step === 7 && (
-              <motion.div key="step7" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-                <h2 className="text-2xl font-bold mb-8">Duração</h2>
-                <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
-                  <div className="p-4 flex justify-between items-center">
+                <div className="mb-10">
+                  <h3 className="text-2xl font-bold mb-6">Duração</h3>
+                  <div className="grid grid-cols-2 gap-8 mb-4">
                     <div>
-                      <p className="text-[10px] font-bold text-apple-text-muted uppercase">Data de Início</p>
-                      <p className="font-semibold">3 de abril (Hoje)</p>
+                      <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider mb-2">Data de Início</p>
+                      <p className="text-lg font-semibold">
+                        {new Date(formData.duration?.startDate || '').toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' })}
+                        {new Date(formData.duration?.startDate || '').toDateString() === new Date().toDateString() ? ' (Hoje)' : ''}
+                      </p>
                     </div>
-                    <button className="text-blue-500 font-bold text-sm">Editar</button>
-                  </div>
-                  <div className="p-4 flex justify-between items-center">
                     <div>
-                      <p className="text-[10px] font-bold text-apple-text-muted uppercase">Data do Término</p>
-                      <p className="font-semibold text-apple-text-muted">Nenhuma</p>
+                      <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider mb-2">Data do Término</p>
+                      <p className={`text-lg font-semibold ${formData.duration?.endDate ? '' : 'text-apple-text-muted'}`}>
+                        {formData.duration?.endDate ? new Date(formData.duration.endDate).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' }) : 'Nenhuma'}
+                      </p>
                     </div>
-                    <button className="text-blue-500 font-bold text-sm">Editar</button>
                   </div>
+                  <button className="text-blue-500 font-bold text-lg">Editar</button>
                 </div>
-                <button onClick={saveMedication} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl mt-12">Finalizar</button>
+
+                <button onClick={saveMedication} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                  Seguinte
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {step < 7 && step !== 4 && step !== 5 && step !== 6 && (
+        {step < 6 && step !== 4 && step !== 5 && (
           <div className="p-6 border-t border-apple-border">
             <button 
               onClick={handleNext}
@@ -1491,116 +2136,257 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   }
 
   return (
-    <div className="pb-24 pt-8 px-5">
-      <div className="flex items-center gap-2 mb-6">
+    <div className="pb-32 pt-8 bg-white min-h-screen">
+      {/* Header */}
+      <div className="px-5 flex items-center justify-between mb-8">
         <button onClick={onBack} className="text-blue-500">
-          <ChevronLeft size={28} />
+          <ChevronLeft size={32} />
         </button>
-        <h1 className="apple-title mb-0">Medicamentos</h1>
+        <h1 className="text-xl font-bold">Medicamentos</h1>
+        <div className="w-8" />
       </div>
 
-      {medications.length === 0 ? (
-        <div className="apple-card p-6 mb-8 text-center">
-          <div className="flex justify-center mb-6">
-            <div className="relative">
-              <div className="w-20 h-20 bg-apple-background rounded-full flex items-center justify-center">
-                <Pill size={40} className="text-blue-500" />
+      {/* Date Selector */}
+      <div className="px-5 mb-10">
+        <h2 className="text-2xl font-bold text-center mb-6">
+          Hoje, {selectedDate.toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' })}
+        </h2>
+        <div className="flex justify-between items-center px-2">
+          {days.map((d, i) => {
+            const isSelected = d.toDateString() === selectedDate.toDateString();
+            return (
+              <div key={i} className="flex flex-col items-center gap-3">
+                <span className={`text-[10px] font-bold ${isSelected ? 'text-black' : 'text-apple-text-muted'}`}>
+                  {dayNames[d.getDay()]}
+                </span>
+                <button 
+                  onClick={() => setSelectedDate(d)}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-all relative ${isSelected ? 'bg-black text-white' : 'text-apple-text-primary'}`}
+                >
+                  {isSelected && (
+                    <div className="absolute -top-6 text-black">
+                      <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-black" />
+                    </div>
+                  )}
+                  <span className="font-bold text-sm">{d.getDate()}</span>
+                </button>
+                {/* Blue dot for logged meds could go here */}
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
               </div>
-              <div className="absolute -top-2 -right-2 w-8 h-8 bg-white rounded-full shadow-md flex items-center justify-center">
-                <Clock size={16} className="text-blue-500" />
-              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Registrar Section */}
+      <div className="px-5 mb-12">
+        <h3 className="text-2xl font-bold mb-6 tracking-tight">Registrar</h3>
+        <div className="space-y-8">
+          {medications.filter(m => !m.isSOS && m.active && !m.archived).map(m => (
+            <div key={m.id} className="space-y-4">
+              {m.schedule?.times.map((time, idx) => {
+                const log = medicationLogs.find(l => l.medicationId === m.id && new Date(l.timestamp).toDateString() === selectedDate.toDateString());
+                return (
+                  <div 
+                    key={idx} 
+                    onClick={() => setSelectedLogMedication({ med: m, time })}
+                    className="flex items-center justify-between group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-16">
+                        <p className="text-xl font-bold text-apple-text-primary">{time}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm overflow-hidden">
+                          <div className="rotate-45 flex">
+                            <div className="w-3 h-2 rounded-l-full" style={{ backgroundColor: m.colors?.left }} />
+                            <div className="w-3 h-2 rounded-r-full" style={{ backgroundColor: m.colors?.right }} />
+                          </div>
+                        </div>
+                        <p className="text-lg font-medium text-apple-text-primary">{m.name}</p>
+                      </div>
+                    </div>
+                    {log ? (
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center text-blue-500">
+                        <CheckCircle size={28} />
+                      </div>
+                    ) : (
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center text-blue-500 active:scale-90 transition-transform">
+                        <Plus size={28} strokeWidth={2.5} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+          ))}
+          
+          <div className="flex items-center justify-between pt-4">
+            <p className="text-lg font-medium text-apple-text-primary">Medicamentos de Uso Esporádico</p>
+            <button className="w-10 h-10 rounded-full flex items-center justify-center text-blue-500">
+              <Plus size={28} strokeWidth={2.5} />
+            </button>
           </div>
-          <h2 className="text-2xl font-black mb-4">Configure Seus Medicamentos</h2>
-          <div className="space-y-4 text-left mb-8">
-            <div className="flex items-start gap-4">
-              <Pill className="text-blue-500 mt-1" size={24} />
-              <div>
-                <p className="font-bold">Controle todos os seus medicamentos em apenas um lugar.</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-4">
-              <Clock className="text-blue-400 mt-1" size={24} />
-              <div>
-                <p className="font-bold text-apple-text-secondary">Defina horários e receba lembretes.</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-4">
-              <div className="w-6 h-6 bg-red-500 rounded-lg flex items-center justify-center text-white mt-1">
-                <Lock size={14} />
-              </div>
-              <div>
-                <p className="font-bold text-apple-text-secondary">
-                  As informações sobre os seus medicamentos são criptografadas e não podem ser lidas por ninguém, incluindo a Apple, sem a sua permissão.
-                </p>
-              </div>
-            </div>
-          </div>
+        </div>
+      </div>
+
+      {/* Seus Medicamentos Section */}
+      <div className="px-5 mb-12">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-2xl font-bold tracking-tight">Seus Medicamentos</h3>
           <button 
-            onClick={() => setShowAddFlow(true)}
-            className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform"
+            onClick={() => setShowEditList(true)}
+            className="text-blue-500 font-medium text-lg"
           >
-            Adicionar um Medicamento
+            Editar
           </button>
         </div>
-      ) : (
-        <div className="mb-8">
-          <div className="flex justify-between items-end mb-4">
-            <h2 className="apple-section-header mb-0">Seus Medicamentos</h2>
-            <button onClick={() => setShowAddFlow(true)} className="text-blue-500 font-bold text-sm">Adicionar</button>
-          </div>
-          <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
-            {medications.map(m => (
-              <div key={m.id} className="p-4 flex items-center gap-4">
-                <div 
-                  className="w-12 h-12 rounded-full flex items-center justify-center"
-                  style={{ backgroundColor: m.colors?.background || '#F2F2F7', color: m.colors?.left || '#007AFF' }}
-                >
-                  <Pill size={24} />
-                </div>
-                <div className="flex-grow">
-                  <p className="font-bold">{m.name}</p>
-                  <p className="text-xs text-apple-text-secondary">
-                    {m.intensity} {m.unit} • {m.type}
-                  </p>
-                </div>
-                <ChevronRight size={18} className="text-apple-text-muted" />
+        <div className="space-y-4">
+          {medications.filter(m => !m.archived).map(m => (
+            <div 
+              key={m.id} 
+              onClick={() => setSelectedMedicationDetails(m)}
+              className="apple-card p-0 overflow-hidden flex items-center relative group active:scale-[0.98] transition-transform cursor-pointer"
+            >
+              <div className="w-32 h-32 shrink-0">
+                <MedicationIcon colors={m.colors} shape={m.shape} size="lg" />
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <h2 className="apple-section-header">Sobre Medicamentos</h2>
-      <div className="apple-card p-0 overflow-hidden mb-8">
-        <div className="bg-slate-800 p-8 flex flex-wrap gap-4 justify-center">
-          <Activity className="text-blue-300" size={32} />
-          <Pill className="text-orange-400" size={32} />
-          <Utensils className="text-blue-200" size={32} />
-          <Heart className="text-red-400" size={32} />
-        </div>
-        <div className="p-5">
-          <h3 className="text-xl font-bold mb-2">Monitorando seus medicamentos</h3>
-          <p className="text-apple-text-secondary">Por que é importante saber o que você está tomando.</p>
+              <div className="flex-grow py-4 pr-10">
+                <h4 className="text-xl font-bold mb-0.5">{m.name}</h4>
+                <p className="text-apple-text-secondary font-medium">{m.type}</p>
+                <p className="text-apple-text-secondary font-medium">{m.intensity} {m.unit}</p>
+                <div className="flex items-center gap-1.5 mt-2 text-apple-text-muted">
+                  <Calendar size={14} />
+                  <span className="text-sm font-medium">{m.schedule?.frequency}</span>
+                </div>
+              </div>
+              <ChevronRight size={24} className="text-apple-text-muted absolute right-4" />
+            </div>
+          ))}
+          <button 
+            onClick={() => setShowAddFlow(true)}
+            className="text-blue-500 font-medium text-lg mt-4 block"
+          >
+            Adicionar Medicamento
+          </button>
         </div>
       </div>
 
-      <h2 className="apple-section-header">Mais</h2>
-      <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
-        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
-          <span className="font-semibold text-[17px]">Fixar no Resumo</span>
-          <div className="w-5 h-5 bg-yellow-400 rounded-full flex items-center justify-center text-white">
-            <Plus size={12} strokeWidth={4} />
-          </div>
-        </button>
-        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
-          <span className="font-semibold text-[17px] text-blue-500">Exportar PDF</span>
-        </button>
-        <button className="w-full p-4 flex justify-between items-center active:bg-apple-background">
-          <span className="font-semibold text-[17px]">Opções</span>
-          <ChevronRight size={18} className="text-apple-text-muted" />
-        </button>
+      {/* Informações Sobre Medicamentos Section */}
+      <div className="px-5 mb-12">
+        <h3 className="text-2xl font-bold mb-6 tracking-tight">Informações Sobre Medicamentos</h3>
+        <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+          {[
+            { label: 'Interações de Medicamentos', value: 'Nenhuma Encontrada' },
+            { label: 'Gravidez' },
+            { label: 'Lactação' }
+          ].map((item, i) => (
+            <div key={i} className="p-4 flex justify-between items-center active:bg-apple-background transition-colors cursor-pointer">
+              <div>
+                <p className="text-lg font-medium">{item.label}</p>
+                {item.value && <p className="text-apple-text-muted">{item.value}</p>}
+              </div>
+              <ChevronRight size={20} className="text-apple-text-muted" />
+            </div>
+          ))}
+        </div>
+        <p className="text-sm text-apple-text-muted mt-4 px-1">
+          Informações adicionais estão disponíveis nas bulas dos medicamentos.
+        </p>
       </div>
+
+      {/* Sobre Medicamentos Section */}
+      <div className="px-5 mb-12">
+        <h3 className="text-2xl font-bold mb-6 tracking-tight">Sobre Medicamentos</h3>
+        <div className="apple-card p-0 overflow-hidden mb-4">
+          <div className="bg-slate-900 aspect-[4/3] p-8 grid grid-cols-3 gap-6 items-center justify-items-center">
+            <div className="text-white/80"><Activity size={40} /></div>
+            <div className="text-white/80"><Pill size={40} /></div>
+            <div className="text-white/80"><Utensils size={40} /></div>
+            <div className="text-white/80"><Heart size={40} /></div>
+            <div className="text-white/80"><Smartphone size={40} /></div>
+            <div className="text-white/80"><Lock size={40} /></div>
+            <div className="text-white/80"><Calendar size={40} /></div>
+            <div className="text-white/80"><Clock size={40} /></div>
+            <div className="text-white/80"><FileText size={40} /></div>
+          </div>
+          <div className="p-6">
+            <h4 className="text-2xl font-black mb-2 leading-tight">Monitorando seus medicamentos</h4>
+            <p className="text-lg text-apple-text-secondary leading-relaxed">Por que é importante saber o que você está tomando.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Mais Section */}
+      <div className="px-5 mb-12">
+        <h3 className="text-2xl font-bold mb-6 tracking-tight">Mais</h3>
+        <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border mb-4">
+          <div className="p-4 flex justify-between items-center active:bg-apple-background transition-colors cursor-pointer">
+            <span className="text-lg font-medium">Desafixar do Resumo</span>
+            <div className="w-6 h-6 bg-apple-border rounded-full flex items-center justify-center text-apple-text-muted">
+              <Plus size={14} className="rotate-45" />
+            </div>
+          </div>
+        </div>
+        <p className="text-sm text-apple-text-muted mb-8 px-1">
+          Os tópicos fixados aparecem na parte superior do Resumo.
+        </p>
+        
+        <div className="space-y-6 px-1">
+          <button className="text-blue-500 font-medium text-lg block">Exportar PDF</button>
+          <div className="flex justify-between items-center cursor-pointer active:opacity-70 transition-opacity">
+            <span className="text-lg font-medium">Opções</span>
+            <ChevronRight size={20} className="text-apple-text-muted" />
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {selectedMedicationDetails && (
+          <MedicationDetailView 
+            medication={selectedMedicationDetails}
+            logs={medicationLogs.filter(l => l.medicationId === selectedMedicationDetails.id)}
+            onClose={() => setSelectedMedicationDetails(null)}
+            onUpdate={updateMedication}
+            onDelete={async (id) => {
+              await deleteMedication(id);
+              setSelectedMedicationDetails(null);
+            }}
+            onArchive={async (id) => {
+              await updateMedication(id, { archived: true });
+              setSelectedMedicationDetails(null);
+            }}
+            onLog={async (status) => {
+              await addMedicationLog(selectedMedicationDetails.id, selectedMedicationDetails.name, status);
+            }}
+          />
+        )}
+        {selectedLogMedication && (
+          <MedicationLogModal 
+            medication={selectedLogMedication.med}
+            time={selectedLogMedication.time}
+            onClose={() => setSelectedLogMedication(null)}
+            onLog={async (status) => {
+              await addMedicationLog(selectedLogMedication.med.id, selectedLogMedication.med.name, status);
+              setSelectedLogMedication(null);
+            }}
+            lastLog={medicationLogs.find(l => l.medicationId === selectedLogMedication.med.id)}
+          />
+        )}
+        {showEditList && (
+          <EditMedicationListView 
+            medications={medications}
+            onClose={() => setShowEditList(false)}
+            onUpdate={updateMedication}
+            onDelete={deleteMedication}
+            onReorder={reorderMedications}
+            onAdd={() => {
+              setShowEditList(false);
+              setShowAddFlow(true);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -1609,6 +2395,7 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
   const { exams, addExam, addSample } = useHealth();
   const [showAddFlow, setShowAddFlow] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [step, setStep] = useState(1); // 1: Choose Source, 2: Review/Edit
   const [formData, setFormData] = useState<Partial<Exam>>({
     type: '',
@@ -1626,14 +2413,39 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadError(null);
+
+    // Check if it's a PDF and too large
+    if (file.type === 'application/pdf' && file.size > 1024 * 1024) {
+      setUploadError("O arquivo PDF é muito grande (máximo 1MB). Por favor, use uma versão menor ou uma foto.");
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const base64 = (event.target?.result as string).split(',')[1];
-      setFormData(prev => ({ ...prev, fileData: base64, fileType: file.type }));
+      let base64 = (event.target?.result as string).split(',')[1];
+      let fileType = file.type;
+
+      // Compress if it's an image
+      if (fileType.startsWith('image/')) {
+        try {
+          base64 = await compressImage(base64, fileType);
+        } catch (error) {
+          console.error("Compression Error:", error);
+        }
+      }
+
+      // Final check for base64 size (Firestore limit is 1MB)
+      if (base64.length > 1.3 * 1024 * 1024) {
+        setUploadError("O arquivo ainda é muito grande para o sistema. Tente uma imagem com menor resolução.");
+        return;
+      }
+
+      setFormData(prev => ({ ...prev, fileData: base64, fileType: fileType }));
       
       setIsAnalyzing(true);
       try {
-        const analysis = await analyzeExam(base64, file.type);
+        const analysis = await analyzeExam(base64, fileType);
         setFormData(prev => ({
           ...prev,
           ...analysis,
@@ -1699,7 +2511,7 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
           <div className="w-10" />
         </div>
 
-        <div className="flex-grow overflow-y-auto p-6">
+        <div className="flex-grow min-h-0 overflow-y-auto p-6">
           {isAnalyzing ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <motion.div
@@ -1723,6 +2535,12 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
                 <h2 className="text-2xl font-bold">Como deseja adicionar?</h2>
                 <p className="text-apple-text-secondary mt-2">Tire uma foto ou anexe um arquivo PDF/Imagem</p>
               </div>
+
+              {uploadError && (
+                <div className="bg-red-50 text-red-500 p-4 rounded-2xl text-sm font-medium mb-6">
+                  {uploadError}
+                </div>
+              )}
 
               <div className="grid gap-4">
                 <label className="apple-card p-6 flex items-center gap-4 cursor-pointer active:bg-apple-background transition-colors">
@@ -2017,7 +2835,7 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
           <div className="w-12" />
         </div>
 
-        <div className="flex-grow overflow-y-auto p-6">
+        <div className="flex-grow min-h-0 overflow-y-auto p-6">
           <div className="flex flex-col items-center mb-8">
             <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center text-blue-500 mb-4">
               <FileText size={40} />
@@ -2286,17 +3104,14 @@ const BrowseView = ({ searchQuery, onSelectCategory, onOpenSharing }: {
   onOpenSharing: () => void
 }) => {
   const categories = [
-    { name: 'Acompanhamento de Ciclo de Quimioterapia', icon: <Activity />, color: '#FF2D55' },
-    { name: 'Radioterapia', icon: <Activity />, color: '#FF2D55' },
-    { name: 'Hormonoterapia', icon: <Activity />, color: '#FF2D55' },
-    { name: 'Atividade', icon: <Activity />, color: '#FF2D55' },
-    { name: 'Coração', icon: <Heart />, color: '#FF3B30' },
-    { name: 'Sono', icon: <Moon />, color: '#5E5CE6' },
+    { name: 'Exames', icon: <FileText />, color: '#007AFF' },
+    { name: 'Medicamentos', icon: <Pill />, color: '#32ADE6' },
     { name: 'Nutrição', icon: <Utensils />, color: '#34C759' },
     { name: 'Sintomas', icon: <Activity />, color: '#FF9500' },
-    { name: 'Sinais Vitais', icon: <Activity />, color: '#FF3B30' },
-    { name: 'Medicamentos', icon: <Pill />, color: '#32ADE6' },
-    { name: 'Exames', icon: <FileText />, color: '#007AFF' },
+    { name: 'Agendamentos', icon: <Calendar />, color: '#AF52DE' },
+    { name: 'Ciclo de quimioterapia', icon: <Zap />, color: '#FF2D55' },
+    { name: 'Atividade', icon: <Activity />, color: '#FF3B30' },
+    { name: 'Sinais vitais', icon: <Heart />, color: '#FF3B30' },
   ];
 
   const filteredCategories = categories.filter(cat => 
@@ -2393,6 +3208,220 @@ const SYMPTOM_DESCRIPTIONS: Record<string, string> = {
   // Add more as needed
 };
 
+const SymptomHistoryView = ({ onClose }: { onClose: () => void }) => {
+  const { symptomLogs } = useHealth();
+  const [search, setSearch] = useState('');
+  const [selectedType, setSelectedType] = useState<string | 'All'>('All');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+
+  const symptomTypes = Array.from(new Set(symptomLogs.map(log => log.type)));
+
+  const filteredLogs = symptomLogs.filter(log => {
+    const matchesSearch = log.type.toLowerCase().includes(search.toLowerCase()) || (log.notes || '').toLowerCase().includes(search.toLowerCase());
+    const matchesType = selectedType === 'All' || log.type === selectedType;
+    
+    let matchesDate = true;
+    if (dateRange.start) {
+      matchesDate = matchesDate && new Date(log.timestamp) >= new Date(dateRange.start);
+    }
+    if (dateRange.end) {
+      matchesDate = matchesDate && new Date(log.timestamp) <= new Date(dateRange.end);
+    }
+
+    return matchesSearch && matchesType && matchesDate;
+  });
+
+  return (
+    <motion.div 
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+      className="fixed inset-0 bg-apple-background z-[200] flex flex-col"
+    >
+      <div className="p-5 pt-12 flex justify-between items-center border-b border-apple-border bg-white">
+        <button onClick={onClose} className="text-blue-500 flex items-center gap-1 font-medium">
+          <ChevronLeft size={24} />
+          Resumo
+        </button>
+        <h1 className="text-lg font-bold">Histórico de Sintomas</h1>
+        <div className="w-12" />
+      </div>
+
+      <div className="p-4 bg-white border-b border-apple-border space-y-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-apple-text-muted" size={18} />
+          <input 
+            type="text"
+            placeholder="Buscar nos registros"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-apple-background rounded-xl py-3 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          />
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+          <button 
+            onClick={() => setSelectedType('All')}
+            className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-all ${selectedType === 'All' ? 'bg-blue-500 text-white' : 'bg-apple-background text-apple-text-secondary'}`}
+          >
+            Todos
+          </button>
+          {symptomTypes.map(type => (
+            <button 
+              key={type}
+              onClick={() => setSelectedType(type)}
+              className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-all ${selectedType === type ? 'bg-blue-500 text-white' : 'bg-apple-background text-apple-text-secondary'}`}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-4">
+          <div className="flex-grow">
+            <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1 ml-1">Início</p>
+            <input 
+              type="date" 
+              value={dateRange.start}
+              onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+              className="w-full bg-apple-background rounded-xl p-2 text-sm focus:outline-none"
+            />
+          </div>
+          <div className="flex-grow">
+            <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1 ml-1">Fim</p>
+            <input 
+              type="date" 
+              value={dateRange.end}
+              onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+              className="w-full bg-apple-background rounded-xl p-2 text-sm focus:outline-none"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-grow min-h-0 overflow-y-auto p-4 space-y-4">
+        {filteredLogs.length === 0 ? (
+          <div className="text-center py-20">
+            <Activity size={48} className="mx-auto text-apple-border mb-4" />
+            <p className="text-apple-text-secondary">Nenhum registro encontrado</p>
+          </div>
+        ) : (
+          filteredLogs.map(log => (
+            <div key={log.id} className="apple-card p-4 flex items-start gap-4">
+              <div className="w-12 h-12 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-500 shrink-0">
+                <Activity size={24} />
+              </div>
+              <div className="flex-grow">
+                <div className="flex justify-between items-start mb-1">
+                  <h3 className="font-bold text-lg">{log.type}</h3>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                    log.intensity === 'Grave' ? 'bg-red-100 text-red-600' :
+                    log.intensity === 'Moderado' ? 'bg-orange-100 text-orange-600' :
+                    'bg-green-100 text-green-600'
+                  }`}>
+                    {log.intensity}
+                  </span>
+                </div>
+                <p className="text-xs text-apple-text-muted font-medium mb-2">
+                  {new Date(log.timestamp).toLocaleDateString('pt-BR', { 
+                    day: '2-digit', 
+                    month: 'long', 
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </p>
+                {log.notes && (
+                  <div className="bg-apple-background/50 p-3 rounded-xl border border-apple-border/50">
+                    <p className="text-sm text-apple-text-secondary italic">"{log.notes}"</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </motion.div>
+  );
+};
+
+const EditPinnedView = ({ onClose }: { onClose: () => void }) => {
+  const { pinnedMetrics, togglePinnedMetric, symptomLogs } = useHealth();
+  const [search, setSearch] = useState('');
+
+  const filteredMetrics = ALL_METRICS.filter(m => 
+    m.name.toLowerCase().includes(search.toLowerCase()) || 
+    m.category.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const categories = Array.from(new Set(ALL_METRICS.map(m => m.category)));
+
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+      className="fixed inset-0 bg-apple-background z-[200] flex flex-col"
+    >
+      <div className="p-5 pt-12 flex justify-between items-center border-b border-apple-border bg-white">
+        <div className="w-12" />
+        <h1 className="text-lg font-bold">Editar Lista</h1>
+        <button onClick={onClose} className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-white shadow-lg active:scale-90 transition-transform">
+          <Check size={24} />
+        </button>
+      </div>
+
+      <div className="p-4 bg-white border-b border-apple-border">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-apple-text-muted" size={18} />
+          <input 
+            type="text"
+            placeholder="Buscar"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-apple-background rounded-xl py-3 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          />
+        </div>
+      </div>
+
+      <div className="flex-grow min-h-0 overflow-y-auto p-4 space-y-8">
+        {categories.map(category => {
+          const metricsInCategory = filteredMetrics.filter(m => m.category === category);
+          if (metricsInCategory.length === 0) return null;
+
+          return (
+            <div key={category}>
+              <h2 className="text-xl font-bold mb-4 px-2">{category}</h2>
+              <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
+                {metricsInCategory.map(metric => {
+                  const isPinned = pinnedMetrics.includes(metric.id);
+                  return (
+                    <div 
+                      key={metric.id}
+                      onClick={() => togglePinnedMetric(metric.id)}
+                      className="p-4 flex items-center gap-4 active:bg-apple-background transition-colors cursor-pointer"
+                    >
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${isPinned ? 'bg-yellow-400 text-white' : 'bg-apple-border text-apple-text-muted'}`}>
+                        <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
+                      </div>
+                      <span className="font-medium flex-grow">{metric.name}</span>
+                      <div className="text-apple-text-muted">
+                        <Menu size={18} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+};
+
 const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = ({ category, onBack }) => {
   const { samples, addSample } = useHealth();
   const [timeRange, setTimeRange] = useState<'D' | 'S' | 'M' | '6M' | 'A'>('S');
@@ -2401,24 +3430,18 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
 
   const sampleTypeMap: Record<string, string> = {
     'Atividade': 'steps',
-    'Coração': 'heart_rate',
-    'Sono': 'sleep_hours',
     'Nutrição': 'calories',
-    'Sinais Vitais': 'blood_pressure',
-    'Acompanhamento de Ciclo de Quimioterapia': 'chemo_cycle',
-    'Radioterapia': 'radio_session',
-    'Hormonoterapia': 'hormone_dose'
+    'Sinais vitais': 'blood_pressure',
+    'Ciclo de quimioterapia': 'chemo_cycle',
+    'Agendamentos': 'appointments'
   };
 
   const unitMap: Record<string, string> = {
     'Atividade': 'passos',
-    'Coração': 'BPM',
-    'Sono': 'horas',
     'Nutrição': 'kcal',
-    'Sinais Vitais': 'mmHg',
-    'Acompanhamento de Ciclo de Quimioterapia': 'dia',
-    'Radioterapia': 'sessão',
-    'Hormonoterapia': 'dose'
+    'Sinais vitais': 'mmHg',
+    'Ciclo de quimioterapia': 'dia',
+    'Agendamentos': 'agendado'
   };
 
   const type = sampleTypeMap[category] || category.toLowerCase().replace(/ /g, '_');
@@ -2815,7 +3838,7 @@ const AddSymptomFlow: React.FC<{ symptom: string; onClose: () => void }> = ({ sy
         </button>
       </div>
 
-      <div className="flex-grow overflow-y-auto p-6">
+      <div className="flex-grow min-h-0 overflow-y-auto p-6">
         <div className="flex flex-col items-center mb-10">
           <div className="w-20 h-20 rounded-full bg-apple-mindfulness/10 flex items-center justify-center text-apple-mindfulness mb-4">
             <Activity size={40} />
@@ -3155,6 +4178,8 @@ const AppContent = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
+  const [showEditPinned, setShowEditPinned] = useState(false);
+  const [showSymptomHistory, setShowSymptomHistory] = useState(false);
   const [showSharing, setShowSharing] = useState(false);
 
   useEffect(() => {
@@ -3244,6 +4269,8 @@ const AppContent = () => {
         {showOnboarding && <OnboardingView onComplete={completeOnboarding} />}
         {showProfile && <ProfileView onClose={() => setShowProfile(false)} />}
         {showSharing && <SharingView onBack={() => setShowSharing(false)} />}
+        {showEditPinned && <EditPinnedView onClose={() => setShowEditPinned(false)} />}
+        {showSymptomHistory && <SymptomHistoryView onClose={() => setShowSymptomHistory(false)} />}
         {selectedCategory && (
           <CategoryDetailView 
             category={selectedCategory} 
@@ -3271,6 +4298,8 @@ const AppContent = () => {
               onSelectCategory={(cat) => setSelectedCategory(cat)}
               onSelectTab={(tab) => setActiveTab(tab)}
               onSelectExam={(exam) => setSelectedExam(exam)}
+              onOpenEditPinned={() => setShowEditPinned(true)}
+              onOpenSymptomHistory={() => setShowSymptomHistory(true)}
             />
           </motion.div>
         )}
