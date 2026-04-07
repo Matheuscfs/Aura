@@ -13,11 +13,11 @@ export default defineConfig(({mode}) => {
       VitePWA({
         registerType: 'autoUpdate',
         manifest: {
-          name: 'Aura',
-          short_name: 'Aura',
+          name: 'GabreLela',
+          short_name: 'GabreLela',
           description: 'Um dia de cada vez',
-          theme_color: '#0A1A2F',
-          background_color: '#0A1A2F',
+          theme_color: '#FFFFFF',
+          background_color: '#FFFFFF',
           display: 'standalone',
           orientation: 'portrait',
           icons: [
