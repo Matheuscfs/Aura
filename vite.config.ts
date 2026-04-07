@@ -16,8 +16,8 @@ export default defineConfig(({mode}) => {
           name: 'Aura',
           short_name: 'Aura',
           description: 'Um dia de cada vez',
-          theme_color: '#111827',
-          background_color: '#111827',
+          theme_color: '#0A1A2F',
+          background_color: '#0A1A2F',
           display: 'standalone',
           orientation: 'portrait',
           icons: [

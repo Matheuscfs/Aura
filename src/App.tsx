@@ -6859,6 +6859,7 @@ const AppContent = () => {
   const [showSharing, setShowSharing] = useState(false);
   const [showTumorDetail, setShowTumorDetail] = useState(false);
   const [showScheduling, setShowScheduling] = useState(false);
+  const [swipeDirection, setSwipeDirection] = useState(0); // 1 for right, -1 for left
 
   // Drag to scroll logic for the whole screen
   const mainScrollRef = useRef<HTMLDivElement>(null);
@@ -6910,6 +6911,36 @@ const AppContent = () => {
       mainScrollRef.current.scrollTo(0, 0);
     }
   }, [activeTab]);
+
+  const handleTabChange = (tab: string) => {
+    const tabs = ['summary', 'exams', 'browse'];
+    const currentIndex = tabs.indexOf(activeTab);
+    const targetIndex = tabs.indexOf(tab);
+
+    if (currentIndex !== -1 && targetIndex !== -1) {
+      setSwipeDirection(targetIndex > currentIndex ? -1 : 1);
+    }
+    setActiveTab(tab);
+  };
+
+  // Swipe Navigation Logic
+  const handleSwipe = (direction: 'left' | 'right') => {
+    const tabs = ['summary', 'exams', 'browse'];
+    const currentIndex = tabs.indexOf(activeTab);
+    
+    // Safety check for sub-tabs (like nutrition, etc.)
+    if (currentIndex === -1) return;
+
+    if (direction === 'left' && currentIndex < tabs.length - 1) {
+      handleTabChange(tabs[currentIndex + 1]);
+    } else if (direction === 'right' && currentIndex > 0) {
+      handleTabChange(tabs[currentIndex - 1]);
+    }
+  };
+
+  const isModalOpen = showProfile || showOnboarding || showSharing || showEditPinned || 
+                     showSymptomHistory || showTumorDetail || showScheduling || 
+                     !!selectedCategory || !!selectedExam;
 
   // Add some mock data on first load for demo
   useEffect(() => {
@@ -7026,12 +7057,25 @@ const AppContent = () => {
   }
 
   return (
-    <div 
-      ref={mainScrollRef}
+    <motion.div 
+      ref={mainScrollRef as any}
       onMouseDown={handleMouseDownMain}
       onMouseMove={handleMouseMoveMain}
       onMouseUp={handleMouseUpMain}
       onMouseLeave={handleMouseUpMain}
+      onPanEnd={(_, info) => {
+        if (isModalOpen) return;
+        
+        // Thresholds for swipe: velocity > 200 or distance > 100
+        const { offset, velocity } = info;
+        if (Math.abs(offset.y) > Math.abs(offset.x)) return; // Mostly vertical
+
+        if (offset.x < -100 || velocity.x < -200) {
+          handleSwipe('left');
+        } else if (offset.x > 100 || velocity.x > 200) {
+          handleSwipe('right');
+        }
+      }}
       className={`h-screen overflow-y-auto no-scrollbar max-w-md mx-auto bg-apple-background apple-gradient-bg relative ${isDraggingMain ? 'cursor-grabbing select-none' : 'cursor-default'}`}
     >
       <AnimatePresence>
@@ -7060,14 +7104,15 @@ const AppContent = () => {
         {activeTab === 'summary' && (
           <motion.div
             key="summary"
-            initial={{ opacity: 0, x: -20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
           >
             <SummaryView 
               onOpenProfile={() => setShowProfile(true)} 
               onSelectCategory={(cat) => setSelectedCategory(cat)}
-              onSelectTab={(tab) => setActiveTab(tab)}
+              onSelectTab={(tab) => handleTabChange(tab)}
               onSelectExam={(exam) => setSelectedExam(exam)}
               onOpenEditPinned={() => setShowEditPinned(true)}
               onOpenSymptomHistory={() => setShowSymptomHistory(true)}
@@ -7079,19 +7124,20 @@ const AppContent = () => {
         {activeTab === 'browse' && (
           <motion.div
             key="browse"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
           >
             <BrowseView 
               searchQuery={searchQuery} 
               onSelectCategory={(cat) => {
-                if (cat === 'Medicamentos') setActiveTab('medications');
-                else if (cat === 'Exames') setActiveTab('exams');
-                else if (cat === 'Sintomas') setActiveTab('symptoms');
-                else if (cat === 'Nutrição') setActiveTab('nutrition');
-                else if (cat === 'Atividade') setActiveTab('activity');
-                else if (cat === 'Sinais vitais') setActiveTab('vitals');
+                if (cat === 'Medicamentos') handleTabChange('medications');
+                else if (cat === 'Exames') handleTabChange('exams');
+                else if (cat === 'Sintomas') handleTabChange('symptoms');
+                else if (cat === 'Nutrição') handleTabChange('nutrition');
+                else if (cat === 'Atividade') handleTabChange('activity');
+                else if (cat === 'Sinais vitais') handleTabChange('vitals');
                 else if (cat === 'Agendamentos') setShowScheduling(true);
                 else setSelectedCategory(cat);
               }} 
@@ -7102,22 +7148,23 @@ const AppContent = () => {
         {activeTab === 'medications' && (
           <motion.div
             key="medications"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
           >
-            <MedicationsView onBack={() => setActiveTab('browse')} />
+            <MedicationsView onBack={() => handleTabChange('browse')} />
           </motion.div>
         )}
         {activeTab === 'exams' && (
           <motion.div
             key="exams"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
           >
             <ExamsView 
-              onBack={activeTab === 'exams' ? undefined : () => setActiveTab('browse')} 
+              onBack={activeTab === 'exams' ? undefined : () => handleTabChange('browse')} 
               onSelectExam={(exam) => setSelectedExam(exam)}
             />
           </motion.div>
@@ -7125,52 +7172,52 @@ const AppContent = () => {
         {activeTab === 'symptoms' && (
           <motion.div
             key="symptoms"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
           >
-            <SymptomsView onBack={() => setActiveTab('browse')} />
+            <SymptomsView onBack={() => handleTabChange('browse')} />
           </motion.div>
         )}
         {activeTab === 'nutrition' && (
           <motion.div
             key="nutrition"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
           >
-            <NutritionView onBack={() => setActiveTab('browse')} />
+            <NutritionView onBack={() => handleTabChange('browse')} />
           </motion.div>
         )}
         {activeTab === 'activity' && (
           <motion.div
             key="activity"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
           >
-            <ActivityView onBack={() => setActiveTab('browse')} />
+            <ActivityView onBack={() => handleTabChange('browse')} />
           </motion.div>
         )}
         {activeTab === 'vitals' && (
           <motion.div
             key="vitals"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: swipeDirection > 0 ? -50 : 50 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
+            exit={{ opacity: 0, x: swipeDirection > 0 ? 50 : -50 }}
           >
-            <VitalSignsView onBack={() => setActiveTab('browse')} />
+            <VitalSignsView onBack={() => handleTabChange('browse')} />
           </motion.div>
         )}
       </AnimatePresence>
 
       <BottomNav 
         activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+        setActiveTab={handleTabChange} 
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
       />
-    </div>
+    </motion.div>
   );
 };
 
