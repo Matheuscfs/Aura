@@ -19,11 +19,20 @@ service cloud.firestore {
     }
 
     // User Profile Validation
+    function isValidActivityGoals(goals) {
+      return goals is map && 
+             goals.keys().hasOnly(['steps', 'distance', 'active_energy']) &&
+             (!('steps' in goals) || goals.steps is number) &&
+             (!('distance' in goals) || goals.distance is number) &&
+             (!('active_energy' in goals) || goals.active_energy is number);
+    }
+
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'email']) &&
              data.uid == request.auth.uid &&
              isValidEmail(data.email) &&
-             (data.keys().hasOnly(['uid', 'displayName', 'photoURL', 'email', 'birthDate', 'sex', 'bloodType']));
+             (data.keys().hasOnly(['uid', 'displayName', 'photoURL', 'email', 'birthDate', 'sex', 'bloodType', 'activityGoals'])) &&
+             (!('activityGoals' in data) || isValidActivityGoals(data.activityGoals));
     }
 
     // Health Sample Validation
@@ -155,6 +164,39 @@ service cloud.firestore {
              isValidDateString(data.updatedAt);
     }
 
+    // Scheduled Exam Validation
+    function isValidScheduledExam(data) {
+      let requiredFields = ['type', 'name', 'date', 'time', 'completed', 'timestamp'];
+      let allowedFields = ['type', 'name', 'date', 'time', 'location', 'notes', 'completed', 'timestamp'];
+      let allowedTypes = ['Hemograma', 'Ressonância', 'Tomografia (TC)', 'Cintilografia', 'Ultrassom', 'Biópsia', 'Outro'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.type in allowedTypes &&
+             data.name is string && data.name.size() > 0 &&
+             isValidSimpleDate(data.date) &&
+             data.time is string &&
+             data.completed is bool &&
+             isValidDateString(data.timestamp) &&
+             (!('location' in data) || data.location is string) &&
+             (!('notes' in data) || data.notes is string);
+    }
+
+    // Nutrition Log Validation
+    function isValidNutritionLog(data) {
+      let requiredFields = ['mealType', 'content', 'timestamp'];
+      let allowedFields = ['mealType', 'content', 'calories', 'timestamp', 'notes'];
+      let allowedMealTypes = ['Café da Manhã', 'Almoço', 'Jantar', 'Lanche'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.mealType in allowedMealTypes &&
+             data.content is string && data.content.size() > 0 &&
+             isValidDateString(data.timestamp) &&
+             (!('calories' in data) || data.calories is number) &&
+             (!('notes' in data) || data.notes is string);
+    }
+
     match /test/connection {
       allow read: if isAuthenticated();
     }
@@ -219,6 +261,19 @@ service cloud.firestore {
       match /tumor_profile/{profileId} {
         allow read: if isOwner(userId);
         allow write: if isOwner(userId) && isValidTumorProfile(request.resource.data);
+      }
+
+      match /scheduled_exams/{examId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create, update: if isAuthenticated() && request.auth.uid == userId && isValidScheduledExam(request.resource.data);
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
+
+      match /nutrition_logs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidNutritionLog(request.resource.data);
+        allow update: if isOwner(userId) && isValidNutritionLog(request.resource.data);
+        allow delete: if isOwner(userId);
       }
     }
   }

@@ -11,7 +11,15 @@
         "email": { "type": "string", "description": "User's email address" },
         "birthDate": { "type": "string", "format": "date", "description": "User's birth date" },
         "sex": { "type": "string", "enum": ["male", "female", "other"], "description": "Biological sex" },
-        "bloodType": { "type": "string", "description": "Blood type (e.g., A+, O-)" }
+        "bloodType": { "type": "string", "description": "Blood type (e.g., A+, O-)" },
+        "activityGoals": {
+          "type": "object",
+          "properties": {
+            "steps": { "type": "number" },
+            "distance": { "type": "number" },
+            "active_energy": { "type": "number" }
+          }
+        }
       },
       "required": ["uid", "email"]
     },
@@ -101,6 +109,35 @@
         "birads": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
       }
+    },
+    "ScheduledExam": {
+      "title": "Scheduled Exam",
+      "description": "Information about a future medical exam.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["Hemograma", "Ressonância", "Tomografia (TC)", "Cintilografia", "Ultrassom", "Biópsia", "Outro"] },
+        "name": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "name", "date", "time", "completed", "timestamp"]
+    },
+    "NutritionLog": {
+      "title": "Nutrition Log",
+      "description": "Stores logs for meals and nutritional intake.",
+      "type": "object",
+      "properties": {
+        "mealType": { "type": "string", "enum": ["Café da Manhã", "Almoço", "Jantar", "Lanche"] },
+        "content": { "type": "string" },
+        "calories": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string" }
+      },
+      "required": ["mealType", "content", "timestamp"]
     }
   },
   "firestore": {
@@ -131,6 +168,14 @@
     "/users/{userId}/tumor_profile/{profileId}": {
       "schema": "TumorProfile",
       "description": "Tumor profile information."
+    },
+    "/users/{userId}/scheduled_exams/{examId}": {
+      "schema": "ScheduledExam",
+      "description": "Upcoming medical exams."
+    },
+    "/users/{userId}/nutrition_logs/{logId}": {
+      "schema": "NutritionLog",
+      "description": "Nutrition and meal logs."
     }
   }
 }

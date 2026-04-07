@@ -37,7 +37,12 @@ import {
   Archive,
   Share2,
   Layers,
-  Maximize
+  Maximize,
+  Scale,
+  Droplets,
+  Wind,
+  Zap as ZapIcon,
+  Flame
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -164,6 +169,18 @@ interface MedicalID {
   updatedAt: string;
 }
 
+interface ScheduledExam {
+  id: string;
+  type: string;
+  name: string;
+  date: string;
+  time: string;
+  location: string;
+  notes: string;
+  completed: boolean;
+  timestamp: string;
+}
+
 interface Exam {
   id: string;
   type: string;
@@ -202,6 +219,21 @@ interface TumorProfile {
   updatedAt: string;
 }
 
+interface NutritionLog {
+  id: string;
+  mealType: 'Café da Manhã' | 'Almoço' | 'Jantar' | 'Lanche';
+  content: string;
+  calories?: number;
+  timestamp: string;
+  notes?: string;
+}
+
+interface ActivityGoals {
+  steps: number;
+  distance: number;
+  active_energy: number;
+}
+
 interface HealthContextType {
   user: User | null;
   samples: HealthSample[];
@@ -210,7 +242,10 @@ interface HealthContextType {
   symptomLogs: SymptomLog[];
   cycles: TreatmentCycle[];
   exams: Exam[];
+  scheduledExams: ScheduledExam[];
+  nutritionLogs: NutritionLog[];
   tumorProfile: TumorProfile | null;
+  activityGoals: ActivityGoals;
   loading: boolean;
   addSample: (type: string, value: number, unit: string, timestamp?: string) => Promise<void>;
   addMedication: (med: Omit<Medication, 'id'>) => Promise<void>;
@@ -221,7 +256,13 @@ interface HealthContextType {
   addSymptomLog: (type: string, intensity: SymptomLog['intensity'], timestamp?: string, endDate?: string, notes?: string) => Promise<void>;
   addExam: (exam: Omit<Exam, 'id'>) => Promise<void>;
   deleteExam: (id: string) => Promise<void>;
+  addScheduledExam: (exam: Omit<ScheduledExam, 'id'>) => Promise<void>;
+  updateScheduledExam: (id: string, exam: Partial<ScheduledExam>) => Promise<void>;
+  deleteScheduledExam: (id: string) => Promise<void>;
+  addNutritionLog: (log: Omit<NutritionLog, 'id'>) => Promise<void>;
+  deleteNutritionLog: (id: string) => Promise<void>;
   updateTumorProfile: (profile: Partial<TumorProfile>) => Promise<void>;
+  updateActivityGoals: (goals: Partial<ActivityGoals>) => Promise<void>;
   pinnedMetrics: string[];
   togglePinnedMetric: (metric: string) => Promise<void>;
   healthData: HealthData | null;
@@ -231,6 +272,7 @@ interface HealthContextType {
   addCycle: (cycle: Omit<TreatmentCycle, 'id'>) => Promise<void>;
   updateCycle: (id: string, cycle: Partial<TreatmentCycle>) => Promise<void>;
   deleteCycle: (id: string) => Promise<void>;
+  showToast: (message: string) => void;
 }
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
@@ -433,11 +475,20 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [symptomLogs, setSymptomLogs] = useState<SymptomLog[]>([]);
   const [cycles, setCycles] = useState<TreatmentCycle[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [scheduledExams, setScheduledExams] = useState<ScheduledExam[]>([]);
+  const [nutritionLogs, setNutritionLogs] = useState<NutritionLog[]>([]);
   const [tumorProfile, setTumorProfile] = useState<TumorProfile | null>(null);
+  const [activityGoals, setActivityGoals] = useState<ActivityGoals>({ steps: 10000, distance: 8, active_energy: 500 });
   const [pinnedMetrics, setPinnedMetrics] = useState<string[]>(['steps', 'heart_rate', 'temperature', 'tumor_size']);
   const [healthData, setHealthData] = useState<HealthData | null>(null);
   const [medicalID, setMedicalID] = useState<MedicalID | null>(null);
   const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
@@ -482,6 +533,14 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const unsubExams = onSnapshot(query(collection(db, `users/${user.uid}/exams`), orderBy('timestamp', 'desc')), (s) => {
       setExams(s.docs.map(d => ({ id: d.id, ...d.data() })) as Exam[]);
     }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/exams`));
+    
+    const unsubScheduledExams = onSnapshot(query(collection(db, `users/${user.uid}/scheduled_exams`), orderBy('date', 'asc')), (s) => {
+      setScheduledExams(s.docs.map(d => ({ id: d.id, ...d.data() })) as ScheduledExam[]);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/scheduled_exams`));
+
+    const unsubNutrition = onSnapshot(query(collection(db, `users/${user.uid}/nutrition_logs`), orderBy('timestamp', 'desc'), limit(50)), (s) => {
+      setNutritionLogs(s.docs.map(d => ({ id: d.id, ...d.data() })) as NutritionLog[]);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/nutrition_logs`));
 
     const unsubPinned = onSnapshot(doc(db, `users/${user.uid}/settings`, 'pinned'), (doc) => {
       if (doc.exists()) {
@@ -537,6 +596,13 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/tumor_profile/current`));
 
+    const unsubUser = onSnapshot(doc(db, 'users', user.uid), (d) => {
+      if (d.exists()) {
+        const data = d.data();
+        if (data.activityGoals) setActivityGoals(data.activityGoals);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}`));
+
     return () => {
       unsubSamples();
       unsubMeds();
@@ -544,12 +610,27 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       unsubSymptoms();
       unsubCycles();
       unsubExams();
+      unsubScheduledExams();
+      unsubNutrition();
       unsubPinned();
       unsubHealthData();
       unsubMedicalID();
       unsubProfile();
+      unsubUser();
     };
   }, [user]);
+
+  const updateActivityGoals = async (goals: Partial<ActivityGoals>) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        activityGoals: { ...activityGoals, ...goals }
+      });
+      showToast('Metas atualizadas!');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
 
   const addSample = async (type: string, value: number, unit: string, timestamp?: string) => {
     if (!user) return;
@@ -558,6 +639,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await addDoc(collection(db, path), {
         uid: user.uid, type, value, unit, timestamp: timestamp || new Date().toISOString(),
       });
+      showToast('Dado registrado com sucesso!');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
@@ -569,6 +651,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     try {
       const currentMaxOrder = medications.length > 0 ? Math.max(...medications.map(m => m.order || 0)) : 0;
       await addDoc(collection(db, path), { ...med, order: currentMaxOrder + 1 });
+      showToast('Medicamento adicionado!');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
@@ -615,6 +698,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await addDoc(collection(db, path), {
         medicationId, medicationName, status, timestamp: timestamp || new Date().toISOString(),
       });
+      showToast(status === 'Taken' ? 'Medicamento registrado!' : 'Registro atualizado');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
@@ -631,6 +715,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         timestamp: timestamp || new Date().toISOString(),
         endDate: endDate || timestamp || new Date().toISOString()
       });
+      showToast('Sintoma registrado!');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
@@ -643,6 +728,36 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await addDoc(collection(db, path), exam);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
+  const addScheduledExam = async (exam: Omit<ScheduledExam, 'id'>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/scheduled_exams`;
+    try {
+      await addDoc(collection(db, path), { ...exam, timestamp: new Date().toISOString() });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
+  const updateScheduledExam = async (id: string, exam: Partial<ScheduledExam>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/scheduled_exams/${id}`;
+    try {
+      await updateDoc(doc(db, path), exam);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const deleteScheduledExam = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/scheduled_exams/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
     }
   };
 
@@ -681,6 +796,27 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const path = `users/${user.uid}/exams/${id}`;
     try {
       await deleteDoc(doc(db, `users/${user.uid}/exams`, id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
+  const addNutritionLog = async (log: Omit<NutritionLog, 'id'>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/nutrition_logs`;
+    try {
+      await addDoc(collection(db, path), log);
+      showToast('Refeição registrada!');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
+  const deleteNutritionLog = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/nutrition_logs/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
@@ -739,10 +875,26 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   return (
     <HealthContext.Provider value={{ 
-      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, tumorProfile, loading, pinnedMetrics, healthData, medicalID,
-      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, updateTumorProfile, togglePinnedMetric, updateHealthData, updateMedicalID, addCycle, updateCycle, deleteCycle 
+      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, scheduledExams, nutritionLogs, tumorProfile, activityGoals, loading, pinnedMetrics, healthData, medicalID,
+      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, addScheduledExam, updateScheduledExam, deleteScheduledExam, addNutritionLog, deleteNutritionLog, updateTumorProfile, updateActivityGoals, togglePinnedMetric, updateHealthData, updateMedicalID, addCycle, updateCycle, deleteCycle,
+      showToast
     }}>
       {children}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.9 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[1000] bg-apple-text-primary text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-bold"
+          >
+            <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center">
+              <Check size={14} strokeWidth={4} />
+            </div>
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </HealthContext.Provider>
   );
 };
@@ -756,18 +908,21 @@ const useHealth = () => {
 // --- Components ---
 
 const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user, medicalID, updateMedicalID, healthData, medications } = useHealth();
+  const { user, medicalID, updateMedicalID, healthData, updateHealthData, medications } = useHealth();
   const [isEditing, setIsEditing] = useState(false);
   const [editID, setEditID] = useState<MedicalID | null>(null);
+  const [editHealth, setEditHealth] = useState<HealthData | null>(null);
 
   useEffect(() => {
-    if (medicalID) setEditID(medicalID);
-  }, [medicalID]);
+    if (medicalID) setEditID(JSON.parse(JSON.stringify(medicalID)));
+    if (healthData) setEditHealth(JSON.parse(JSON.stringify(healthData)));
+  }, [medicalID, healthData]);
 
-  if (!editID) return null;
+  if (!editID || !editHealth) return null;
 
   const handleSave = async () => {
-    await updateMedicalID(editID);
+    if (editID) await updateMedicalID(editID);
+    if (editHealth) await updateHealthData(editHealth);
     setIsEditing(false);
   };
 
@@ -782,19 +937,39 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     return age;
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
-  };
-
   const SectionHeader = ({ title, onAction, actionLabel = "Editar" }: { title: string, onAction?: () => void, actionLabel?: string }) => (
     <div className="flex justify-between items-center mb-2 mt-6">
       <h3 className="text-red-500 font-bold text-lg">{title}</h3>
-      {onAction && (
+      {onAction && !isEditing && (
         <button onClick={onAction} className="text-blue-500 font-medium">{actionLabel}</button>
       )}
     </div>
   );
+
+  const addEmergencyContact = () => {
+    if (!editID) return;
+    setEditID({
+      ...editID,
+      emergencyContacts: [
+        ...editID.emergencyContacts,
+        { name: '', relationship: '', phone: '' }
+      ]
+    });
+  };
+
+  const removeEmergencyContact = (index: number) => {
+    if (!editID) return;
+    const newContacts = [...editID.emergencyContacts];
+    newContacts.splice(index, 1);
+    setEditID({ ...editID, emergencyContacts: newContacts });
+  };
+
+  const updateEmergencyContact = (index: number, field: keyof EmergencyContact, value: string) => {
+    if (!editID) return;
+    const newContacts = [...editID.emergencyContacts];
+    newContacts[index] = { ...newContacts[index], [field]: value };
+    setEditID({ ...editID, emergencyContacts: newContacts });
+  };
 
   return (
     <motion.div 
@@ -813,7 +988,12 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <span className="text-red-500 text-2xl font-black">*</span>
             <span className="font-bold text-lg text-red-500">Ficha Médica</span>
           </div>
-          <div className="w-10" /> {/* Spacer */}
+          <button 
+            onClick={() => isEditing ? handleSave() : setIsEditing(true)}
+            className="text-blue-500 font-bold"
+          >
+            {isEditing ? 'OK' : 'Editar'}
+          </button>
         </div>
 
         <div className="mb-8">
@@ -821,7 +1001,7 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <div className="flex justify-between items-center py-2">
             <span className="text-apple-text-primary text-lg">Mostrar Quando Bloqueado</span>
             <button 
-              onClick={() => updateMedicalID({ showOnLockScreen: !editID.showOnLockScreen })}
+              onClick={() => setEditID({ ...editID, showOnLockScreen: !editID.showOnLockScreen })}
               className={`w-12 h-7 rounded-full transition-colors relative ${editID.showOnLockScreen ? 'bg-green-500' : 'bg-apple-border'}`}
             >
               <motion.div 
@@ -835,13 +1015,40 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </p>
         </div>
 
-        <SectionHeader title="Foto e Informações" onAction={() => {}} />
+        <SectionHeader title="Foto e Informações" />
         <div className="flex justify-between items-center py-4">
-          <div>
-            <h2 className="text-2xl font-bold">{healthData?.firstName} {healthData?.lastName}</h2>
-            <p className="text-apple-text-primary text-lg">{healthData ? calculateAge(healthData.birthDate) : '--'} anos</p>
+          <div className="flex-grow mr-4">
+            {isEditing ? (
+              <div className="space-y-2">
+                <input 
+                  type="text"
+                  value={editHealth.firstName}
+                  onChange={(e) => setEditHealth({ ...editHealth, firstName: e.target.value })}
+                  className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Nome"
+                />
+                <input 
+                  type="text"
+                  value={editHealth.lastName}
+                  onChange={(e) => setEditHealth({ ...editHealth, lastName: e.target.value })}
+                  className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Sobrenome"
+                />
+                <input 
+                  type="date"
+                  value={editHealth.birthDate}
+                  onChange={(e) => setEditHealth({ ...editHealth, birthDate: e.target.value })}
+                  className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            ) : (
+              <>
+                <h2 className="text-2xl font-bold">{healthData?.firstName} {healthData?.lastName}</h2>
+                <p className="text-apple-text-primary text-lg">{healthData ? calculateAge(healthData.birthDate) : '--'} anos</p>
+              </>
+            )}
           </div>
-          <div className="w-20 h-20 rounded-full bg-apple-border overflow-hidden border-2 border-white shadow-sm">
+          <div className="w-20 h-20 rounded-full bg-apple-border overflow-hidden border-2 border-white shadow-sm flex-shrink-0">
             {user?.photoURL ? (
               <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             ) : (
@@ -850,10 +1057,20 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         </div>
 
-        <SectionHeader title="Gravidez" onAction={() => {}} actionLabel="Adicionar" />
-        <p className="text-apple-text-primary text-lg mb-4">{editID.pregnancy || '--'}</p>
+        <SectionHeader title="Gravidez" />
+        {isEditing ? (
+          <input 
+            type="text"
+            value={editID.pregnancy}
+            onChange={(e) => setEditID({ ...editID, pregnancy: e.target.value })}
+            className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500 mb-4"
+            placeholder="Ex: Não"
+          />
+        ) : (
+          <p className="text-apple-text-primary text-lg mb-4">{editID.pregnancy || '--'}</p>
+        )}
 
-        <SectionHeader title="Medicamentos" onAction={() => {}} />
+        <SectionHeader title="Medicamentos" />
         <div className="space-y-1 mb-4">
           {medications.filter(m => m.active).length > 0 ? (
             medications.filter(m => m.active).map(m => (
@@ -862,20 +1079,131 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           ) : (
             <p className="text-apple-text-primary text-lg">--</p>
           )}
+          <p className="text-apple-text-muted text-xs mt-1 italic">* Gerencie medicamentos na aba Medicamentos</p>
         </div>
 
-        <SectionHeader title="Alergias" onAction={() => {}} actionLabel="Adicionar" />
-        <p className="text-apple-text-primary text-lg mb-4">{editID.allergies || '--'}</p>
+        <SectionHeader title="Condições Médicas" />
+        {isEditing ? (
+          <textarea 
+            value={editID.medicalConditions}
+            onChange={(e) => setEditID({ ...editID, medicalConditions: e.target.value })}
+            className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500 mb-4 h-24"
+            placeholder="Descreva suas condições médicas"
+          />
+        ) : (
+          <p className="text-apple-text-primary text-lg mb-4">{editID.medicalConditions || '--'}</p>
+        )}
 
-        <SectionHeader title="Contatos de Emergência" onAction={() => {}} />
+        <SectionHeader title="Alergias" />
+        {isEditing ? (
+          <textarea 
+            value={editID.allergies}
+            onChange={(e) => setEditID({ ...editID, allergies: e.target.value })}
+            className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500 mb-4 h-24"
+            placeholder="Descreva suas alergias"
+          />
+        ) : (
+          <p className="text-apple-text-primary text-lg mb-4">{editID.allergies || '--'}</p>
+        )}
+
+        <div className="grid grid-cols-2 gap-4 mt-6">
+          <div>
+            <SectionHeader title="Altura" />
+            {isEditing ? (
+              <div className="flex items-center gap-2">
+                <input 
+                  type="number"
+                  value={editID.height}
+                  onChange={(e) => setEditID({ ...editID, height: Number(e.target.value) })}
+                  className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-apple-text-muted font-bold">cm</span>
+              </div>
+            ) : (
+              <p className="text-apple-text-primary text-lg">{editID.height ? `${editID.height} cm` : '--'}</p>
+            )}
+          </div>
+          <div>
+            <SectionHeader title="Peso" />
+            {isEditing ? (
+              <div className="flex items-center gap-2">
+                <input 
+                  type="number"
+                  value={editID.weight}
+                  onChange={(e) => setEditID({ ...editID, weight: Number(e.target.value) })}
+                  className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-apple-text-muted font-bold">kg</span>
+              </div>
+            ) : (
+              <p className="text-apple-text-primary text-lg">{editID.weight ? `${editID.weight} kg` : '--'}</p>
+            )}
+          </div>
+        </div>
+
+        <SectionHeader title="Notas Adicionais" />
+        {isEditing ? (
+          <textarea 
+            value={editID.notes}
+            onChange={(e) => setEditID({ ...editID, notes: e.target.value })}
+            className="w-full p-2 bg-apple-background rounded-lg border-none focus:ring-2 focus:ring-blue-500 mb-4 h-24"
+            placeholder="Notas importantes"
+          />
+        ) : (
+          <p className="text-apple-text-primary text-lg mb-4">{editID.notes || '--'}</p>
+        )}
+
+        <SectionHeader title="Contatos de Emergência" onAction={isEditing ? undefined : () => setIsEditing(true)} />
         <div className="space-y-4 mb-4">
           {editID.emergencyContacts.map((contact, idx) => (
-            <div key={idx}>
-              <p className="text-apple-text-muted font-medium">{contact.relationship}</p>
-              <p className="text-apple-text-primary font-bold text-lg">{contact.name}</p>
-              <p className="text-blue-500 text-lg">{contact.phone}</p>
+            <div key={idx} className="relative bg-apple-background p-4 rounded-2xl border border-apple-border/30">
+              {isEditing ? (
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <input 
+                      type="text"
+                      value={contact.relationship}
+                      onChange={(e) => updateEmergencyContact(idx, 'relationship', e.target.value)}
+                      className="w-full p-1 bg-transparent border-b border-apple-border focus:outline-none focus:border-blue-500 text-apple-text-muted font-medium"
+                      placeholder="Parentesco (ex: Mãe)"
+                    />
+                    <button onClick={() => removeEmergencyContact(idx)} className="text-red-500 p-1">
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                  <input 
+                    type="text"
+                    value={contact.name}
+                    onChange={(e) => updateEmergencyContact(idx, 'name', e.target.value)}
+                    className="w-full p-1 bg-transparent border-b border-apple-border focus:outline-none focus:border-blue-500 text-apple-text-primary font-bold text-lg"
+                    placeholder="Nome do Contato"
+                  />
+                  <input 
+                    type="text"
+                    value={contact.phone}
+                    onChange={(e) => updateEmergencyContact(idx, 'phone', e.target.value)}
+                    className="w-full p-1 bg-transparent border-b border-apple-border focus:outline-none focus:border-blue-500 text-blue-500 text-lg"
+                    placeholder="Telefone"
+                  />
+                </div>
+              ) : (
+                <>
+                  <p className="text-apple-text-muted font-medium">{contact.relationship}</p>
+                  <p className="text-apple-text-primary font-bold text-lg">{contact.name}</p>
+                  <p className="text-blue-500 text-lg">{contact.phone}</p>
+                </>
+              )}
             </div>
           ))}
+          {isEditing && (
+            <button 
+              onClick={addEmergencyContact}
+              className="w-full py-3 border-2 border-dashed border-apple-border rounded-2xl text-blue-500 font-bold flex items-center justify-center gap-2"
+            >
+              <Plus size={20} />
+              Adicionar Contato
+            </button>
+          )}
         </div>
         <p className="text-apple-text-muted text-sm mt-4 leading-relaxed">
           Quando você usa o SOS de Emergência para ligar para os serviços de emergência, seus contatos de emergência que tenham um número de celular também receberão uma mensagem com a sua localização atual. <span className="text-blue-500">Saiba Mais sobre o SOS de Emergência</span>
@@ -905,6 +1233,228 @@ const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           Atualização: {new Date(editID.updatedAt).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' })}
         </div>
       </div>
+    </motion.div>
+  );
+};
+
+const SchedulingView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { scheduledExams, addScheduledExam, updateScheduledExam, deleteScheduledExam } = useHealth();
+  const [showAdd, setShowAdd] = useState(false);
+  const [newExam, setNewExam] = useState<Omit<ScheduledExam, 'id' | 'timestamp'>>({
+    type: 'Hemograma',
+    name: '',
+    date: new Date().toISOString().split('T')[0],
+    time: '08:00',
+    location: '',
+    notes: '',
+    completed: false
+  });
+
+  const examTypes = ['Hemograma', 'Ressonância', 'Tomografia (TC)', 'Cintilografia', 'Ultrassom', 'Biópsia', 'Outro'];
+
+  const handleAdd = async () => {
+    if (!newExam.name || !newExam.date) return;
+    await addScheduledExam(newExam as any);
+    setShowAdd(false);
+    setNewExam({
+      type: 'Hemograma',
+      name: '',
+      date: new Date().toISOString().split('T')[0],
+      time: '08:00',
+      location: '',
+      notes: '',
+      completed: false
+    });
+  };
+
+  const toggleComplete = async (exam: ScheduledExam) => {
+    await updateScheduledExam(exam.id, { completed: !exam.completed });
+  };
+
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+      className="fixed inset-0 bg-apple-background z-[150] overflow-y-auto pb-32"
+    >
+      <div className="p-5 pt-12">
+        <div className="flex justify-between items-center mb-8">
+          <button onClick={onClose} className="text-blue-500">
+            <ChevronLeft size={28} />
+          </button>
+          <h2 className="text-2xl font-black text-apple-text-primary tracking-tight">Agendamentos</h2>
+          <button 
+            onClick={() => setShowAdd(true)}
+            className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-lg active:scale-90 transition-transform"
+          >
+            <Plus size={24} />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {scheduledExams.length === 0 && !showAdd && (
+            <div className="text-center py-20">
+              <div className="w-20 h-20 bg-apple-border/30 rounded-full flex items-center justify-center mx-auto mb-4 text-apple-text-muted">
+                <Calendar size={40} />
+              </div>
+              <p className="text-apple-text-secondary font-bold">Nenhum exame agendado</p>
+              <p className="text-apple-text-muted text-sm px-10">Toque no + para agendar seu próximo exame.</p>
+            </div>
+          )}
+
+          {scheduledExams.map(exam => (
+            <div 
+              key={exam.id} 
+              className={`apple-card p-5 flex items-center gap-4 transition-all ${exam.completed ? 'opacity-60 grayscale' : ''}`}
+            >
+              <button 
+                onClick={() => toggleComplete(exam)}
+                className={`w-8 h-8 rounded-full border-2 flex items-center justify-center transition-colors ${
+                  exam.completed ? 'bg-green-500 border-green-500 text-white' : 'border-apple-border'
+                }`}
+              >
+                {exam.completed && <Check size={18} />}
+              </button>
+              <div className="flex-grow">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest mb-0.5">{exam.type}</p>
+                    <h3 className="font-black text-apple-text-primary">{exam.name}</h3>
+                  </div>
+                  <button onClick={() => deleteScheduledExam(exam.id)} className="text-apple-text-muted p-1">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-3 mt-2 text-xs font-bold text-apple-text-secondary">
+                  <div className="flex items-center gap-1">
+                    <Calendar size={12} />
+                    {new Date(exam.date).toLocaleDateString('pt-BR')}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Clock size={12} />
+                    {exam.time}
+                  </div>
+                </div>
+                {exam.location && (
+                  <p className="text-[10px] text-apple-text-muted mt-1 font-medium">{exam.location}</p>
+                )}
+                {exam.notes && (
+                  <p className="text-[10px] text-apple-text-muted mt-1 italic">Obs: {exam.notes}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showAdd && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[160] flex items-end justify-center p-4"
+            onClick={() => setShowAdd(false)}
+          >
+            <motion.div 
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              className="bg-white w-full max-w-md rounded-[32px] p-8 pb-12 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-black text-apple-text-primary tracking-tight">Novo Agendamento</h3>
+                <button onClick={() => setShowAdd(false)} className="bg-apple-border/50 p-2 rounded-full">
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="space-y-5">
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Tipo de Exame</label>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                    {examTypes.map(type => (
+                      <button
+                        key={type}
+                        onClick={() => setNewExam({ ...newExam, type })}
+                        className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
+                          newExam.type === type ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'bg-apple-border/30 text-apple-text-secondary'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Nome / Descrição</label>
+                  <input 
+                    type="text"
+                    value={newExam.name}
+                    onChange={e => setNewExam({ ...newExam, name: e.target.value })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    placeholder="Ex: Hemograma Completo"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Data</label>
+                    <input 
+                      type="date"
+                      value={newExam.date}
+                      onChange={e => setNewExam({ ...newExam, date: e.target.value })}
+                      className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Hora</label>
+                    <input 
+                      type="time"
+                      value={newExam.time}
+                      onChange={e => setNewExam({ ...newExam, time: e.target.value })}
+                      className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Local</label>
+                  <input 
+                    type="text"
+                    value={newExam.location}
+                    onChange={e => setNewExam({ ...newExam, location: e.target.value })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    placeholder="Ex: Laboratório X"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Observações</label>
+                  <textarea 
+                    value={newExam.notes}
+                    onChange={e => setNewExam({ ...newExam, notes: e.target.value })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-bold min-h-[100px] resize-none"
+                    placeholder="Ex: Jejum de 8 horas, levar exames anteriores..."
+                  />
+                </div>
+
+                <button 
+                  onClick={handleAdd}
+                  disabled={!newExam.name}
+                  className="w-full bg-blue-500 text-white font-black py-5 rounded-[24px] shadow-xl shadow-blue-500/30 active:scale-95 transition-transform disabled:opacity-50 disabled:grayscale"
+                >
+                  Agendar Exame
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };
@@ -1155,21 +1705,13 @@ const ProfileView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       items: [
         { label: 'Dados de Saúde', icon: <Activity size={20} className="text-apple-activity" /> },
         { label: 'Ficha Médica', icon: <FileText size={20} className="text-apple-activity" /> },
+        { label: 'Agendamentos', icon: <Calendar size={20} className="text-blue-500" /> },
       ]
     },
     {
       title: 'Recursos',
       items: [
-        { label: 'Checklist de Saúde', icon: <ClipboardCheck size={20} className="text-apple-mindfulness" /> },
         { label: 'Notificações', icon: <Bell size={20} className="text-red-500" /> },
-      ]
-    },
-    {
-      title: 'Privacidade',
-      items: [
-        { label: 'Apps', icon: <Smartphone size={20} className="text-blue-500" /> },
-        { label: 'Estudos de Pesquisa', icon: <Search size={20} className="text-blue-500" /> },
-        { label: 'Dispositivos', icon: <Smartphone size={20} className="text-blue-500" /> },
       ]
     }
   ];
@@ -1185,7 +1727,8 @@ const ProfileView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       <AnimatePresence>
         {selectedItem === 'Ficha Médica' && <MedicalIDView onClose={() => setSelectedItem(null)} />}
         {selectedItem === 'Dados de Saúde' && <HealthDataView onClose={() => setSelectedItem(null)} />}
-        {selectedItem && !['Ficha Médica', 'Dados de Saúde'].includes(selectedItem) && (
+        {selectedItem === 'Agendamentos' && <SchedulingView onClose={() => setSelectedItem(null)} />}
+        {selectedItem && !['Ficha Médica', 'Dados de Saúde', 'Agendamentos'].includes(selectedItem) && (
           <GenericDetailView title={selectedItem} onClose={() => setSelectedItem(null)} />
         )}
       </AnimatePresence>
@@ -1502,9 +2045,16 @@ const QuickActionFAB: React.FC = () => {
 };
 
 const ALL_METRICS = [
-  { id: 'steps', name: 'Atividade', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
+  { id: 'steps', name: 'Passos', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
+  { id: 'distance', name: 'Distância', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
+  { id: 'active_energy', name: 'Energia Ativa', category: 'Atividade', icon: <Flame size={18} />, color: '#FF2D55' },
   { id: 'heart_rate', name: 'Batimentos', category: 'Sinais vitais', icon: <Heart size={18} />, color: '#FF3B30' },
+  { id: 'blood_pressure_sys', name: 'Pressão Sistólica', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF3B30' },
+  { id: 'blood_pressure_dia', name: 'Pressão Diastólica', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF3B30' },
+  { id: 'oxygen_saturation', name: 'Oxigênio', category: 'Sinais vitais', icon: <Wind size={18} />, color: '#007AFF' },
   { id: 'temperature', name: 'Temperatura', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF9500' },
+  { id: 'weight', name: 'Peso', category: 'Nutrição', icon: <Scale size={18} />, color: '#34C759' },
+  { id: 'water_intake', name: 'Água', category: 'Nutrição', icon: <Droplets size={18} />, color: '#007AFF' },
   { id: 'tumor_size', name: 'Evolução do Tumor', category: 'Exames', icon: <Activity size={18} />, color: '#5E5CE6' },
   { id: 'Plaquetas', name: 'Plaquetas', category: 'Exames', icon: <FileText size={18} />, color: '#007AFF' },
   { id: 'Leucócitos', name: 'Leucócitos', category: 'Exames', icon: <FileText size={18} />, color: '#34C759' },
@@ -1519,16 +2069,17 @@ const ALL_METRICS = [
   { id: 'Alterações de Sono', name: 'Alterações de Sono', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
 ];
 
-const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory, onOpenTumorDetail }: { 
+const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory, onOpenTumorDetail, onOpenScheduling }: { 
   onOpenProfile: () => void, 
   onSelectCategory: (cat: string) => void,
   onSelectTab: (tab: string) => void,
   onSelectExam: (exam: Exam) => void,
   onOpenEditPinned: () => void,
   onOpenSymptomHistory: () => void,
-  onOpenTumorDetail: () => void
+  onOpenTumorDetail: () => void,
+  onOpenScheduling: () => void
 }) => {
-  const { samples, user, cycles, medications, medicationLogs, exams, symptomLogs, pinnedMetrics, tumorProfile } = useHealth();
+  const { samples, user, cycles, medications, medicationLogs, exams, scheduledExams, symptomLogs, pinnedMetrics, tumorProfile } = useHealth();
   
   const getLatest = (type: string) => {
     const filtered = samples.filter(s => s.type === type);
@@ -1634,6 +2185,39 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
         );
       })()}
 
+      {/* Próximos Exames Section */}
+      <div className="mb-8">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-black text-apple-text-primary tracking-tight">Próximos Exames</h2>
+          <button onClick={onOpenScheduling} className="text-blue-500 text-sm font-bold">Ver Todos</button>
+        </div>
+        <div className="space-y-3">
+          {scheduledExams.filter(e => !e.completed).slice(0, 2).map(exam => (
+            <div key={exam.id} className="apple-card p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 flex flex-col items-center justify-center text-blue-500">
+                <span className="text-[10px] font-black uppercase leading-none">{new Date(exam.date).toLocaleDateString('pt-BR', { month: 'short' })}</span>
+                <span className="text-lg font-black leading-none">{new Date(exam.date).getDate()}</span>
+              </div>
+              <div className="flex-grow">
+                <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest mb-0.5">{exam.type}</p>
+                <h3 className="font-bold text-apple-text-primary text-sm">{exam.name}</h3>
+                <p className="text-[10px] text-apple-text-muted font-medium">{exam.time} • {exam.location || 'Local não definido'}</p>
+              </div>
+              <ChevronRight size={16} className="text-apple-text-muted" />
+            </div>
+          ))}
+          {scheduledExams.filter(e => !e.completed).length === 0 && (
+            <button 
+              onClick={onOpenScheduling}
+              className="w-full py-6 border-2 border-dashed border-apple-border rounded-[24px] text-apple-text-muted flex flex-col items-center gap-2 active:scale-95 transition-all"
+            >
+              <Calendar size={24} />
+              <span className="text-xs font-bold">Nenhum exame agendado</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="mb-8">
         <div className="flex justify-between items-end mb-4">
           <h2 className="apple-section-header mb-0">Métricas em Foco</h2>
@@ -1722,7 +2306,12 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
             return (
               <div 
                 key={metricId}
-                onClick={() => onSelectCategory(metricDef.category)}
+                onClick={() => {
+                  if (metricDef.category === 'Atividade') onSelectTab('activity');
+                  else if (metricDef.category === 'Sinais vitais') onSelectTab('vitals');
+                  else if (metricDef.category === 'Nutrição') onSelectTab('nutrition');
+                  else onSelectCategory(metricDef.category);
+                }}
                 className="apple-card p-4 flex flex-col justify-between h-32 cursor-pointer active:scale-[0.98] transition-transform"
               >
                 <div className="flex justify-between items-start">
@@ -2393,6 +2982,805 @@ const EditMedicationListView: React.FC<{
         </p>
       </div>
     </motion.div>
+  );
+};
+
+const ActivityView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const { samples, addSample, activityGoals, updateActivityGoals } = useHealth();
+  const [showAddSteps, setShowAddSteps] = useState(false);
+  const [showAddDistance, setShowAddDistance] = useState(false);
+  const [showAddEnergy, setShowAddEnergy] = useState(false);
+  const [showEditGoals, setShowEditGoals] = useState(false);
+  
+  const [stepsValue, setStepsValue] = useState('');
+  const [distanceValue, setDistanceValue] = useState('');
+  const [energyValue, setEnergyValue] = useState('');
+
+  const [editGoals, setEditGoals] = useState<ActivityGoals>(activityGoals);
+
+  useEffect(() => {
+    setEditGoals(activityGoals);
+  }, [activityGoals]);
+
+  const today = new Date().toDateString();
+  
+  const todaySteps = samples
+    .filter(s => s.type === 'steps' && new Date(s.timestamp).toDateString() === today)
+    .reduce((acc, s) => acc + s.value, 0);
+
+  const todayDistance = samples
+    .filter(s => s.type === 'distance' && new Date(s.timestamp).toDateString() === today)
+    .reduce((acc, s) => acc + s.value, 0);
+
+  const todayEnergy = samples
+    .filter(s => s.type === 'active_energy' && new Date(s.timestamp).toDateString() === today)
+    .reduce((acc, s) => acc + s.value, 0);
+
+  const handleAddSteps = async () => {
+    if (!stepsValue) return;
+    await addSample('steps', parseFloat(stepsValue), 'passos');
+    setShowAddSteps(false);
+    setStepsValue('');
+  };
+
+  const handleAddDistance = async () => {
+    if (!distanceValue) return;
+    await addSample('distance', parseFloat(distanceValue), 'km');
+    setShowAddDistance(false);
+    setDistanceValue('');
+  };
+
+  const handleAddEnergy = async () => {
+    if (!energyValue) return;
+    await addSample('active_energy', parseFloat(energyValue), 'kcal');
+    setShowAddEnergy(false);
+    setEnergyValue('');
+  };
+
+  const handleSaveGoals = async () => {
+    await updateActivityGoals(editGoals);
+    setShowEditGoals(false);
+  };
+
+  return (
+    <div className="pb-32 pt-8 bg-apple-background min-h-screen">
+      <div className="px-5 flex items-center justify-between mb-8">
+        <button onClick={onBack} className="text-blue-500">
+          <ChevronLeft size={32} />
+        </button>
+        <h1 className="text-xl font-bold text-apple-text-primary">Atividade</h1>
+        <button onClick={() => setShowEditGoals(true)} className="text-blue-500 font-bold text-sm">Metas</button>
+      </div>
+
+      <div className="px-5 space-y-6">
+        {/* Rings Simulation or Summary Cards */}
+        <div className="apple-card p-6 bg-gradient-to-br from-rose-500 to-orange-500 text-white border-none shadow-xl shadow-rose-500/20">
+          <div className="flex justify-between items-start mb-6">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">Hoje</p>
+              <h2 className="text-3xl font-black tracking-tight">Atividade</h2>
+            </div>
+            <Activity size={32} className="opacity-80" />
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
+                  <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todaySteps/activityGoals.steps)*100, 100)}%` }} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-80">Passos</p>
+                  <p className="text-xl font-black">{todaySteps.toLocaleString()} <span className="text-xs font-bold opacity-70">/ {activityGoals.steps.toLocaleString()}</span></p>
+                </div>
+              </div>
+              <button onClick={() => setShowAddSteps(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
+                  <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todayDistance/activityGoals.distance)*100, 100)}%` }} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-80">Distância</p>
+                  <p className="text-xl font-black">{todayDistance.toFixed(2)} <span className="text-xs font-bold opacity-70">/ {activityGoals.distance} km</span></p>
+                </div>
+              </div>
+              <button onClick={() => setShowAddDistance(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
+                  <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todayEnergy/activityGoals.active_energy)*100, 100)}%` }} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-80">Energia Ativa</p>
+                  <p className="text-xl font-black">{todayEnergy} <span className="text-xs font-bold opacity-70">/ {activityGoals.active_energy} kcal</span></p>
+                </div>
+              </div>
+              <button onClick={() => setShowAddEnergy(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
+            </div>
+          </div>
+        </div>
+
+        {/* History Section */}
+        <div>
+          <h2 className="text-lg font-black text-apple-text-primary tracking-tight mb-4 px-1">Histórico Recente</h2>
+          <div className="space-y-3">
+            {samples.filter(s => ['steps', 'distance', 'active_energy'].includes(s.type)).slice(0, 10).map(s => (
+              <div key={s.id} className="apple-card p-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${s.type === 'steps' ? 'bg-rose-50 text-rose-500' : s.type === 'distance' ? 'bg-blue-50 text-blue-500' : 'bg-orange-50 text-orange-500'}`}>
+                    {s.type === 'steps' ? <Activity size={18} /> : s.type === 'distance' ? <Activity size={18} /> : <Flame size={18} />}
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-apple-text-primary">
+                      {s.type === 'steps' ? 'Passos' : s.type === 'distance' ? 'Distância' : 'Energia Ativa'}
+                    </p>
+                    <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest">
+                      {new Date(s.timestamp).toLocaleDateString('pt-BR')} às {new Date(s.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                </div>
+                <p className="font-black text-apple-text-primary">{s.value} <span className="text-[10px] font-bold text-apple-text-muted uppercase">{s.unit}</span></p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Modals */}
+      <AnimatePresence>
+        {showAddSteps || showAddDistance || showAddEnergy ? (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => { setShowAddSteps(false); setShowAddDistance(false); setShowAddEnergy(false); }}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">
+                {showAddSteps ? 'Registrar Passos' : showAddDistance ? 'Registrar Distância' : 'Registrar Energia'}
+              </h3>
+              <div className="relative mb-6">
+                <input 
+                  type="number"
+                  value={showAddSteps ? stepsValue : showAddDistance ? distanceValue : energyValue}
+                  onChange={e => {
+                    if (showAddSteps) setStepsValue(e.target.value);
+                    else if (showAddDistance) setDistanceValue(e.target.value);
+                    else setEnergyValue(e.target.value);
+                  }}
+                  className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-rose-500 font-black text-center text-2xl"
+                  placeholder="0"
+                  autoFocus
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted">
+                  {showAddSteps ? 'passos' : showAddDistance ? 'km' : 'kcal'}
+                </span>
+              </div>
+              <button 
+                onClick={showAddSteps ? handleAddSteps : showAddDistance ? handleAddDistance : handleAddEnergy}
+                className="w-full bg-rose-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform"
+              >
+                Salvar
+              </button>
+            </motion.div>
+          </motion.div>
+        ) : showEditGoals ? (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowEditGoals(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Editar Metas Diárias</h3>
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest ml-1">Passos</label>
+                  <input 
+                    type="number"
+                    value={editGoals.steps}
+                    onChange={e => setEditGoals({ ...editGoals, steps: parseInt(e.target.value) || 0 })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-rose-500 font-black text-center text-xl"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest ml-1">Distância (km)</label>
+                  <input 
+                    type="number"
+                    value={editGoals.distance}
+                    onChange={e => setEditGoals({ ...editGoals, distance: parseFloat(e.target.value) || 0 })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-rose-500 font-black text-center text-xl"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest ml-1">Energia (kcal)</label>
+                  <input 
+                    type="number"
+                    value={editGoals.active_energy}
+                    onChange={e => setEditGoals({ ...editGoals, active_energy: parseInt(e.target.value) || 0 })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-rose-500 font-black text-center text-xl"
+                  />
+                </div>
+              </div>
+              <button 
+                onClick={handleSaveGoals}
+                className="w-full bg-rose-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform"
+              >
+                Salvar Metas
+              </button>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const { samples, addSample } = useHealth();
+  const [showAddHeart, setShowAddHeart] = useState(false);
+  const [showAddBP, setShowAddBP] = useState(false);
+  const [showAddOxygen, setShowAddOxygen] = useState(false);
+  const [showAddTemp, setShowAddTemp] = useState(false);
+  
+  const [heartValue, setHeartValue] = useState('');
+  const [bpSys, setBpSys] = useState('');
+  const [bpDia, setBpDia] = useState('');
+  const [oxygenValue, setOxygenValue] = useState('');
+  const [tempValue, setTempValue] = useState('');
+
+  const latestHeart = samples.find(s => s.type === 'heart_rate');
+  const latestBP_sys = samples.find(s => s.type === 'blood_pressure_sys');
+  const latestBP_dia = samples.find(s => s.type === 'blood_pressure_dia');
+  const latestOxygen = samples.find(s => s.type === 'oxygen_saturation');
+  const latestTemp = samples.find(s => s.type === 'temperature');
+
+  const handleAddHeart = async () => {
+    if (!heartValue) return;
+    await addSample('heart_rate', parseFloat(heartValue), 'bpm');
+    setShowAddHeart(false);
+    setHeartValue('');
+  };
+
+  const handleAddBP = async () => {
+    if (!bpSys || !bpDia) return;
+    await addSample('blood_pressure_sys', parseFloat(bpSys), 'mmHg');
+    await addSample('blood_pressure_dia', parseFloat(bpDia), 'mmHg');
+    setShowAddBP(false);
+    setBpSys('');
+    setBpDia('');
+  };
+
+  const handleAddOxygen = async () => {
+    if (!oxygenValue) return;
+    await addSample('oxygen_saturation', parseFloat(oxygenValue), '%');
+    setShowAddOxygen(false);
+    setOxygenValue('');
+  };
+
+  const handleAddTemp = async () => {
+    if (!tempValue) return;
+    await addSample('temperature', parseFloat(tempValue), '°C');
+    setShowAddTemp(false);
+    setTempValue('');
+  };
+
+  return (
+    <div className="pb-32 pt-8 bg-apple-background min-h-screen">
+      <div className="px-5 flex items-center justify-between mb-8">
+        <button onClick={onBack} className="text-blue-500">
+          <ChevronLeft size={32} />
+        </button>
+        <h1 className="text-xl font-bold text-apple-text-primary">Sinais Vitais</h1>
+        <div className="w-8" />
+      </div>
+
+      <div className="px-5 space-y-4">
+        {/* Heart Rate Card */}
+        <div className="apple-card p-5 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center text-rose-500">
+              <Heart size={24} fill="currentColor" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-rose-500 mb-0.5">Batimentos</p>
+              <p className="text-2xl font-black text-apple-text-primary">{latestHeart?.value || '--'} <span className="text-sm font-bold text-apple-text-muted uppercase">bpm</span></p>
+              <p className="text-[10px] font-bold text-apple-text-muted">
+                {latestHeart ? `Último: ${new Date(latestHeart.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Nenhum registro'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setShowAddHeart(true)} className="bg-rose-500 text-white p-3 rounded-2xl shadow-lg shadow-rose-500/20 active:scale-95 transition-transform">
+            <Plus size={20} />
+          </button>
+        </div>
+
+        {/* Blood Pressure Card */}
+        <div className="apple-card p-5 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-500">
+              <Activity size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-0.5">Pressão Arterial</p>
+              <p className="text-2xl font-black text-apple-text-primary">
+                {latestBP_sys?.value || '--'}/{latestBP_dia?.value || '--'} <span className="text-sm font-bold text-apple-text-muted uppercase">mmHg</span>
+              </p>
+              <p className="text-[10px] font-bold text-apple-text-muted">
+                {latestBP_sys ? `Último: ${new Date(latestBP_sys.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Nenhum registro'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setShowAddBP(true)} className="bg-blue-500 text-white p-3 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform">
+            <Plus size={20} />
+          </button>
+        </div>
+
+        {/* Oxygen Card */}
+        <div className="apple-card p-5 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-500">
+              <Wind size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-0.5">Oxigênio</p>
+              <p className="text-2xl font-black text-apple-text-primary">{latestOxygen?.value || '--'} <span className="text-sm font-bold text-apple-text-muted uppercase">%</span></p>
+              <p className="text-[10px] font-bold text-apple-text-muted">
+                {latestOxygen ? `Último: ${new Date(latestOxygen.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Nenhum registro'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setShowAddOxygen(true)} className="bg-indigo-500 text-white p-3 rounded-2xl shadow-lg shadow-indigo-500/20 active:scale-95 transition-transform">
+            <Plus size={20} />
+          </button>
+        </div>
+
+        {/* Temperature Card */}
+        <div className="apple-card p-5 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-orange-50 flex items-center justify-center text-orange-500">
+              <Activity size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-orange-500 mb-0.5">Temperatura</p>
+              <p className="text-2xl font-black text-apple-text-primary">{latestTemp?.value || '--'} <span className="text-sm font-bold text-apple-text-muted uppercase">°C</span></p>
+              <p className="text-[10px] font-bold text-apple-text-muted">
+                {latestTemp ? `Último: ${new Date(latestTemp.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Nenhum registro'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setShowAddTemp(true)} className="bg-orange-500 text-white p-3 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-transform">
+            <Plus size={20} />
+          </button>
+        </div>
+      </div>
+
+      {/* Modals */}
+      <AnimatePresence>
+        {showAddHeart && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddHeart(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Batimentos</h3>
+              <div className="relative mb-6">
+                <input 
+                  type="number"
+                  value={heartValue}
+                  onChange={e => setHeartValue(e.target.value)}
+                  className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-rose-500 font-black text-center text-2xl"
+                  placeholder="0"
+                  autoFocus
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted uppercase">bpm</span>
+              </div>
+              <button onClick={handleAddHeart} className="w-full bg-rose-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Salvar</button>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showAddBP && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddBP(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Pressão Arterial</h3>
+              <div className="space-y-4 mb-6">
+                <div className="relative">
+                  <input 
+                    type="number"
+                    value={bpSys}
+                    onChange={e => setBpSys(e.target.value)}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-black text-center text-2xl"
+                    placeholder="Sistólica"
+                    autoFocus
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted text-[10px]">SYS</span>
+                </div>
+                <div className="relative">
+                  <input 
+                    type="number"
+                    value={bpDia}
+                    onChange={e => setBpDia(e.target.value)}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-blue-500 font-black text-center text-2xl"
+                    placeholder="Diastólica"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted text-[10px]">DIA</span>
+                </div>
+              </div>
+              <button onClick={handleAddBP} className="w-full bg-blue-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Salvar</button>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showAddOxygen && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddOxygen(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Oxigênio</h3>
+              <div className="relative mb-6">
+                <input 
+                  type="number"
+                  value={oxygenValue}
+                  onChange={e => setOxygenValue(e.target.value)}
+                  className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-indigo-500 font-black text-center text-2xl"
+                  placeholder="0"
+                  autoFocus
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted">%</span>
+              </div>
+              <button onClick={handleAddOxygen} className="w-full bg-indigo-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Salvar</button>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showAddTemp && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddTemp(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Temperatura</h3>
+              <div className="relative mb-6">
+                <input 
+                  type="number"
+                  step="0.1"
+                  value={tempValue}
+                  onChange={e => setTempValue(e.target.value)}
+                  className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-orange-500 font-black text-center text-2xl"
+                  placeholder="00.0"
+                  autoFocus
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted">°C</span>
+              </div>
+              <button onClick={handleAddTemp} className="w-full bg-orange-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Salvar</button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const NutritionView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const { nutritionLogs, addNutritionLog, deleteNutritionLog, samples, addSample } = useHealth();
+  const [showAddMeal, setShowAddMeal] = useState(false);
+  const [showAddWater, setShowAddWater] = useState(false);
+  const [showAddWeight, setShowAddWeight] = useState(false);
+  
+  const [newMeal, setNewMeal] = useState<Omit<NutritionLog, 'id' | 'timestamp'>>({
+    mealType: 'Almoço',
+    content: '',
+    calories: undefined,
+    notes: ''
+  });
+
+  const [waterAmount, setWaterAmount] = useState('250');
+  const [weightValue, setWeightValue] = useState('');
+
+  const mealTypes: NutritionLog['mealType'][] = ['Café da Manhã', 'Almoço', 'Jantar', 'Lanche'];
+
+  const handleAddMeal = async () => {
+    if (!newMeal.content) return;
+    await addNutritionLog({
+      ...newMeal,
+      timestamp: new Date().toISOString()
+    });
+    setShowAddMeal(false);
+    setNewMeal({ mealType: 'Almoço', content: '', calories: undefined, notes: '' });
+  };
+
+  const handleAddWater = async () => {
+    if (!waterAmount) return;
+    await addSample('water_intake', parseFloat(waterAmount), 'ml');
+    setShowAddWater(false);
+  };
+
+  const handleAddWeight = async () => {
+    if (!weightValue) return;
+    await addSample('weight', parseFloat(weightValue), 'kg');
+    setShowAddWeight(false);
+    setWeightValue('');
+  };
+
+  const todayWater = samples
+    .filter(s => s.type === 'water_intake' && new Date(s.timestamp).toDateString() === new Date().toDateString())
+    .reduce((acc, s) => acc + s.value, 0);
+
+  const latestWeight = samples.filter(s => s.type === 'weight')[0];
+
+  return (
+    <div className="pb-32 pt-8 bg-apple-background min-h-screen">
+      <div className="px-5 flex items-center justify-between mb-8">
+        <button onClick={onBack} className="text-blue-500">
+          <ChevronLeft size={32} />
+        </button>
+        <h1 className="text-xl font-bold">Nutrição</h1>
+        <div className="w-8" />
+      </div>
+
+      <div className="px-5 space-y-6">
+        {/* Quick Stats */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="apple-card p-4 bg-blue-50/50 border-blue-100">
+            <div className="flex items-center gap-2 mb-2 text-blue-500">
+              <Droplets size={18} />
+              <span className="text-[10px] font-bold uppercase tracking-widest">Água Hoje</span>
+            </div>
+            <p className="text-2xl font-black text-apple-text-primary">{todayWater} <span className="text-sm font-bold text-apple-text-muted">ml</span></p>
+            <button 
+              onClick={() => setShowAddWater(true)}
+              className="mt-3 w-full py-2 bg-blue-500 text-white text-[10px] font-bold rounded-lg uppercase tracking-widest active:scale-95 transition-transform"
+            >
+              Adicionar
+            </button>
+          </div>
+
+          <div className="apple-card p-4 bg-green-50/50 border-green-100">
+            <div className="flex items-center gap-2 mb-2 text-green-600">
+              <Scale size={18} />
+              <span className="text-[10px] font-bold uppercase tracking-widest">Peso Atual</span>
+            </div>
+            <p className="text-2xl font-black text-apple-text-primary">{latestWeight?.value || '--'} <span className="text-sm font-bold text-apple-text-muted">kg</span></p>
+            <button 
+              onClick={() => setShowAddWeight(true)}
+              className="mt-3 w-full py-2 bg-green-600 text-white text-[10px] font-bold rounded-lg uppercase tracking-widest active:scale-95 transition-transform"
+            >
+              Registrar
+            </button>
+          </div>
+        </div>
+
+        {/* Meals Section */}
+        <div>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-black text-apple-text-primary tracking-tight">Diário Alimentar</h2>
+            <button 
+              onClick={() => setShowAddMeal(true)}
+              className="text-blue-500 text-sm font-bold flex items-center gap-1"
+            >
+              <Plus size={16} />
+              Refeição
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {nutritionLogs.length === 0 ? (
+              <div className="apple-card p-8 text-center">
+                <Utensils size={32} className="mx-auto mb-2 text-apple-text-muted opacity-30" />
+                <p className="text-apple-text-muted font-bold text-sm">Nenhuma refeição registrada</p>
+              </div>
+            ) : (
+              nutritionLogs.map(log => (
+                <div key={log.id} className="apple-card p-4 flex gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-orange-50 flex items-center justify-center text-orange-500">
+                    <Utensils size={24} />
+                  </div>
+                  <div className="flex-grow">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-[10px] font-bold text-orange-500 uppercase tracking-widest mb-0.5">{log.mealType}</p>
+                        <h3 className="font-bold text-apple-text-primary text-sm">{log.content}</h3>
+                      </div>
+                      <button onClick={() => deleteNutritionLog(log.id)} className="text-apple-text-muted">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <p className="text-[10px] text-apple-text-muted font-bold">
+                        {new Date(log.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                      {log.calories && (
+                        <p className="text-[10px] text-apple-text-muted font-bold">• {log.calories} kcal</p>
+                      )}
+                    </div>
+                    {log.notes && (
+                      <p className="text-[10px] text-apple-text-muted mt-1 italic">Obs: {log.notes}</p>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Modals */}
+      <AnimatePresence>
+        {showAddMeal && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-end justify-center p-4"
+            onClick={() => setShowAddMeal(false)}
+          >
+            <motion.div 
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              className="bg-white w-full max-w-md rounded-[32px] p-8 pb-12 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-black text-apple-text-primary tracking-tight">Nova Refeição</h3>
+                <button onClick={() => setShowAddMeal(false)} className="bg-apple-border/50 p-2 rounded-full"><X size={20} /></button>
+              </div>
+
+              <div className="space-y-5">
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Tipo</label>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                    {mealTypes.map(t => (
+                      <button 
+                        key={t}
+                        onClick={() => setNewMeal({ ...newMeal, mealType: t })}
+                        className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
+                          newMeal.mealType === t ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/30' : 'bg-apple-border/30 text-apple-text-secondary'
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">O que você comeu?</label>
+                  <input 
+                    type="text"
+                    value={newMeal.content}
+                    onChange={e => setNewMeal({ ...newMeal, content: e.target.value })}
+                    className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-orange-500 font-bold"
+                    placeholder="Ex: Salada de frutas com iogurte"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">Calorias (opcional)</label>
+                    <input 
+                      type="number"
+                      value={newMeal.calories || ''}
+                      onChange={e => setNewMeal({ ...newMeal, calories: e.target.value ? parseFloat(e.target.value) : undefined })}
+                      className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-orange-500 font-bold"
+                      placeholder="Ex: 350"
+                    />
+                  </div>
+                </div>
+
+                <button 
+                  onClick={handleAddMeal}
+                  disabled={!newMeal.content}
+                  className="w-full bg-orange-500 text-white font-black py-5 rounded-[24px] shadow-xl shadow-orange-500/30 active:scale-95 transition-transform disabled:opacity-50"
+                >
+                  Registrar Refeição
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showAddWater && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddWater(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Beber Água</h3>
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                {['150', '250', '350', '500'].map(amount => (
+                  <button 
+                    key={amount}
+                    onClick={() => { setWaterAmount(amount); }}
+                    className={`py-3 rounded-2xl font-bold transition-all ${waterAmount === amount ? 'bg-blue-500 text-white shadow-lg' : 'bg-apple-background text-apple-text-primary'}`}
+                  >
+                    {amount}ml
+                  </button>
+                ))}
+              </div>
+              <button 
+                onClick={handleAddWater}
+                className="w-full bg-blue-500 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform"
+              >
+                Confirmar
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showAddWeight && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+            onClick={() => setShowAddWeight(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[32px] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-xl font-black text-center mb-6">Registrar Peso</h3>
+              <div className="relative mb-6">
+                <input 
+                  type="number"
+                  step="0.1"
+                  value={weightValue}
+                  onChange={e => setWeightValue(e.target.value)}
+                  className="w-full p-4 bg-apple-background rounded-2xl border-none focus:ring-2 focus:ring-green-500 font-black text-center text-2xl"
+                  placeholder="00.0"
+                  autoFocus
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-apple-text-muted">kg</span>
+              </div>
+              <button 
+                onClick={handleAddWeight}
+                disabled={!weightValue}
+                className="w-full bg-green-600 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-transform disabled:opacity-50"
+              >
+                Salvar Peso
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 };
 
@@ -4441,16 +5829,36 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
 
   const sampleTypeMap: Record<string, string> = {
     'Atividade': 'steps',
+    'Passos': 'steps',
+    'Distância': 'distance',
+    'Energia Ativa': 'active_energy',
+    'Peso': 'weight',
+    'Água': 'water_intake',
     'Nutrição': 'calories',
-    'Sinais vitais': 'blood_pressure',
+    'Sinais vitais': 'heart_rate',
+    'Batimentos': 'heart_rate',
+    'Pressão Sistólica': 'blood_pressure_sys',
+    'Pressão Diastólica': 'blood_pressure_dia',
+    'Oxigênio': 'oxygen_saturation',
+    'Temperatura': 'temperature',
     'Ciclo de quimioterapia': 'chemo_cycle',
     'Agendamentos': 'appointments'
   };
 
   const unitMap: Record<string, string> = {
     'Atividade': 'passos',
+    'Passos': 'passos',
+    'Distância': 'km',
+    'Energia Ativa': 'kcal',
+    'Peso': 'kg',
+    'Água': 'ml',
     'Nutrição': 'kcal',
-    'Sinais vitais': 'mmHg',
+    'Sinais vitais': 'bpm',
+    'Batimentos': 'bpm',
+    'Pressão Sistólica': 'mmHg',
+    'Pressão Diastólica': 'mmHg',
+    'Oxigênio': '%',
+    'Temperatura': '°C',
     'Ciclo de quimioterapia': 'dia',
     'Agendamentos': 'agendado'
   };
@@ -5705,6 +7113,7 @@ const AppContent = () => {
   const [showSymptomHistory, setShowSymptomHistory] = useState(false);
   const [showSharing, setShowSharing] = useState(false);
   const [showTumorDetail, setShowTumorDetail] = useState(false);
+  const [showScheduling, setShowScheduling] = useState(false);
 
   // Drag to scroll logic for the whole screen
   const mainScrollRef = useRef<HTMLDivElement>(null);
@@ -5749,6 +7158,13 @@ const AppContent = () => {
       setShowOnboarding(false);
     }
   };
+
+  // Scroll to top when tab changes
+  useEffect(() => {
+    if (mainScrollRef.current) {
+      mainScrollRef.current.scrollTo(0, 0);
+    }
+  }, [activeTab]);
 
   // Add some mock data on first load for demo
   useEffect(() => {
@@ -5880,6 +7296,7 @@ const AppContent = () => {
         {showEditPinned && <EditPinnedView onClose={() => setShowEditPinned(false)} />}
         {showSymptomHistory && <SymptomHistoryView onClose={() => setShowSymptomHistory(false)} />}
         {showTumorDetail && <TumorDetailView onClose={() => setShowTumorDetail(false)} />}
+        {showScheduling && <SchedulingView onClose={() => setShowScheduling(false)} />}
         {selectedCategory && (
           <CategoryDetailView 
             category={selectedCategory} 
@@ -5910,6 +7327,7 @@ const AppContent = () => {
               onOpenEditPinned={() => setShowEditPinned(true)}
               onOpenSymptomHistory={() => setShowSymptomHistory(true)}
               onOpenTumorDetail={() => setShowTumorDetail(true)}
+              onOpenScheduling={() => setShowScheduling(true)}
             />
           </motion.div>
         )}
@@ -5926,6 +7344,10 @@ const AppContent = () => {
                 if (cat === 'Medicamentos') setActiveTab('medications');
                 else if (cat === 'Exames') setActiveTab('exams');
                 else if (cat === 'Sintomas') setActiveTab('symptoms');
+                else if (cat === 'Nutrição') setActiveTab('nutrition');
+                else if (cat === 'Atividade') setActiveTab('activity');
+                else if (cat === 'Sinais vitais') setActiveTab('vitals');
+                else if (cat === 'Agendamentos') setShowScheduling(true);
                 else setSelectedCategory(cat);
               }} 
               onOpenSharing={() => setShowSharing(true)}
@@ -5963,6 +7385,36 @@ const AppContent = () => {
             exit={{ opacity: 0, x: -20 }}
           >
             <SymptomsView onBack={() => setActiveTab('browse')} />
+          </motion.div>
+        )}
+        {activeTab === 'nutrition' && (
+          <motion.div
+            key="nutrition"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <NutritionView onBack={() => setActiveTab('browse')} />
+          </motion.div>
+        )}
+        {activeTab === 'activity' && (
+          <motion.div
+            key="activity"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <ActivityView onBack={() => setActiveTab('browse')} />
+          </motion.div>
+        )}
+        {activeTab === 'vitals' && (
+          <motion.div
+            key="vitals"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <VitalSignsView onBack={() => setActiveTab('browse')} />
           </motion.div>
         )}
       </AnimatePresence>
