@@ -20,9 +20,17 @@
 }
 
 @layer base {
-  body {
-    @apply bg-apple-background text-apple-text-primary font-sans antialiased overflow-x-hidden;
+  html, body {
+    @apply bg-apple-background text-apple-text-primary font-sans antialiased overflow-x-hidden no-scrollbar;
   }
+}
+
+@utility no-scrollbar {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .apple-card {

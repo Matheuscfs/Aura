@@ -80,22 +80,28 @@ service cloud.firestore {
 
     // Treatment Cycle Validation
     function isValidTreatmentCycle(data) {
-      return data.keys().hasAll(['name', 'startDate', 'totalDays', 'currentCycle', 'totalCycles']) &&
+      let requiredFields = ['name', 'type', 'startDate', 'totalDays', 'currentCycle', 'totalCycles'];
+      let allowedFields = ['name', 'type', 'startDate', 'totalDays', 'currentCycle', 'totalCycles', 'notes'];
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
              data.name is string &&
+             data.type in ['Quimioterapia', 'Hormonioterapia', 'Radioterapia', 'Outra'] &&
              isValidDateString(data.startDate) &&
              data.totalDays is number &&
              data.currentCycle is number &&
-             data.totalCycles is number;
+             data.totalCycles is number &&
+             (!('notes' in data) || data.notes is string);
     }
 
     // Exam Validation
     function isValidExam(data) {
       let requiredFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'timestamp'];
       let allowedFields = ['type', 'examName', 'doctorName', 'date', 'fileData', 'fileType', 'analysis', 'timestamp', 'metrics'];
+      let allowedTypes = ['Receita', 'Guia Médica', 'Atestado', 'Documento', 'Laudo'];
       
       return data.keys().hasAll(requiredFields) &&
              data.keys().hasOnly(allowedFields) &&
-             data.type is string &&
+             data.type in allowedTypes &&
              data.examName is string &&
              data.doctorName is string &&
              isValidSimpleDate(data.date) &&
@@ -110,6 +116,36 @@ service cloud.firestore {
     function isValidPinnedSettings(data) {
       return data.keys().hasOnly(['metrics']) &&
              data.metrics is list;
+    }
+
+    // Health Data Validation
+    function isValidHealthData(data) {
+      let requiredFields = ['firstName', 'lastName', 'birthDate', 'sex', 'bloodType', 'skinType', 'isWheelchairUser'];
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(requiredFields) &&
+             data.firstName is string &&
+             data.lastName is string &&
+             isValidSimpleDate(data.birthDate) &&
+             data.sex is string &&
+             data.bloodType is string &&
+             data.skinType is string &&
+             data.isWheelchairUser is bool;
+    }
+
+    // Medical ID Validation
+    function isValidMedicalID(data) {
+      let requiredFields = ['showOnLockScreen', 'pregnancy', 'allergies', 'medicalConditions', 'height', 'weight', 'notes', 'emergencyContacts', 'updatedAt'];
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(requiredFields) &&
+             data.showOnLockScreen is bool &&
+             data.pregnancy is string &&
+             data.allergies is string &&
+             data.medicalConditions is string &&
+             data.height is number &&
+             data.weight is number &&
+             data.notes is string &&
+             data.emergencyContacts is list &&
+             isValidDateString(data.updatedAt);
     }
 
     match /test/connection {
@@ -148,7 +184,8 @@ service cloud.firestore {
 
       match /treatment_cycles/{cycleId} {
         allow read: if isOwner(userId);
-        allow write: if isOwner(userId) && isValidTreatmentCycle(request.resource.data);
+        allow create, update: if isOwner(userId) && isValidTreatmentCycle(request.resource.data);
+        allow delete: if isOwner(userId);
       }
 
       match /exams/{examId} {
@@ -160,6 +197,16 @@ service cloud.firestore {
       match /settings/pinned {
         allow read: if isOwner(userId);
         allow write: if isOwner(userId) && isValidPinnedSettings(request.resource.data);
+      }
+
+      match /settings/health_data {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidHealthData(request.resource.data);
+      }
+
+      match /settings/medical_id {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidMedicalID(request.resource.data);
       }
     }
   }

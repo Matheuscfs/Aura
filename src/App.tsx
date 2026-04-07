@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext, Component } from 'react';
+import React, { useState, useEffect, createContext, useContext, Component, useRef } from 'react';
 import { 
   Activity, 
   Heart, 
@@ -25,7 +25,7 @@ import {
   ChevronLeft,
   Camera,
   Upload,
-  File,
+  File as FileIcon,
   Loader2,
   Zap,
   Calendar,
@@ -34,7 +34,8 @@ import {
   Menu,
   Trash2,
   GripVertical,
-  Archive
+  Archive,
+  Share2
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -123,10 +124,40 @@ interface SymptomLog {
 interface TreatmentCycle {
   id: string;
   name: string;
+  type: 'Quimioterapia' | 'Hormonioterapia' | 'Radioterapia' | 'Outra';
   startDate: string;
   totalDays: number;
   currentCycle: number;
   totalCycles: number;
+  notes?: string;
+}
+
+interface HealthData {
+  firstName: string;
+  lastName: string;
+  birthDate: string;
+  sex: string;
+  bloodType: string;
+  skinType: string;
+  isWheelchairUser: boolean;
+}
+
+interface EmergencyContact {
+  relationship: string;
+  name: string;
+  phone: string;
+}
+
+interface MedicalID {
+  showOnLockScreen: boolean;
+  pregnancy: string;
+  allergies: string;
+  medicalConditions: string;
+  height: number;
+  weight: number;
+  notes: string;
+  emergencyContacts: EmergencyContact[];
+  updatedAt: string;
 }
 
 interface Exam {
@@ -166,6 +197,13 @@ interface HealthContextType {
   deleteExam: (id: string) => Promise<void>;
   pinnedMetrics: string[];
   togglePinnedMetric: (metric: string) => Promise<void>;
+  healthData: HealthData | null;
+  updateHealthData: (data: Partial<HealthData>) => Promise<void>;
+  medicalID: MedicalID | null;
+  updateMedicalID: (data: Partial<MedicalID>) => Promise<void>;
+  addCycle: (cycle: Omit<TreatmentCycle, 'id'>) => Promise<void>;
+  updateCycle: (id: string, cycle: Partial<TreatmentCycle>) => Promise<void>;
+  deleteCycle: (id: string) => Promise<void>;
 }
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
@@ -221,7 +259,7 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 };
 
-const compressImage = (base64: string, mimeType: string, maxWidth = 1200, maxHeight = 1200, quality = 0.7): Promise<string> => {
+const compressImage = (base64: string, mimeType: string, maxWidth = 1000, maxHeight = 1000, quality = 0.6): Promise<string> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.src = `data:${mimeType};base64,${base64}`;
@@ -259,8 +297,8 @@ const analyzeExam = async (fileData: string, fileType: string) => {
   
   const prompt = `Analise este documento médico (exame ou laudo). 
   Extraia as seguintes informações em formato JSON:
-  - type: O tipo do documento (ex: 'Laudo', 'Exame de Sangue', 'Raio-X', etc)
-  - examName: O nome do exame realizado
+  - type: O tipo do documento. Escolha OBRIGATORIAMENTE um destes: 'Receita', 'Guia Médica', 'Atestado', 'Documento', 'Laudo'.
+  - examName: O nome do exame realizado ou título do documento
   - doctorName: O nome do médico responsável (se houver)
   - date: A data do exame no formato YYYY-MM-DD
   - analysis: Um resumo curto (máximo 2 parágrafos) do que o exame diz, em termos simples.
@@ -369,6 +407,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [cycles, setCycles] = useState<TreatmentCycle[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [pinnedMetrics, setPinnedMetrics] = useState<string[]>(['steps', 'heart_rate', 'temperature', 'tumor_size']);
+  const [healthData, setHealthData] = useState<HealthData | null>(null);
+  const [medicalID, setMedicalID] = useState<MedicalID | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -421,6 +461,46 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/settings/pinned`));
 
+    const unsubHealthData = onSnapshot(doc(db, `users/${user.uid}/settings`, 'health_data'), (doc) => {
+      if (doc.exists()) {
+        setHealthData(doc.data() as HealthData);
+      } else {
+        // Default data
+        const defaultData: HealthData = {
+          firstName: user.displayName?.split(' ')[0] || '',
+          lastName: user.displayName?.split(' ').slice(1).join(' ') || '',
+          birthDate: '2000-02-15',
+          sex: 'Masculino',
+          bloodType: 'Não Definido',
+          skinType: 'Não Definido',
+          isWheelchairUser: false
+        };
+        setHealthData(defaultData);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/settings/health_data`));
+
+    const unsubMedicalID = onSnapshot(doc(db, `users/${user.uid}/settings`, 'medical_id'), (doc) => {
+      if (doc.exists()) {
+        setMedicalID(doc.data() as MedicalID);
+      } else {
+        const defaultID: MedicalID = {
+          showOnLockScreen: true,
+          pregnancy: '',
+          allergies: '',
+          medicalConditions: 'Assuma',
+          height: 191,
+          weight: 66.5,
+          notes: 'Cirurgias:\nPneumotórax\nApendicite\nDesvio de septo\nSinusite',
+          emergencyContacts: [
+            { relationship: 'pai', name: 'Pai', phone: '+55 (45) 9981-7932' },
+            { relationship: 'cônjuge', name: 'Gabrilela Fachim', phone: '+55 (45) 99857-1118' }
+          ],
+          updatedAt: new Date().toISOString()
+        };
+        setMedicalID(defaultID);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/settings/medical_id`));
+
     return () => {
       unsubSamples();
       unsubMeds();
@@ -429,6 +509,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       unsubCycles();
       unsubExams();
       unsubPinned();
+      unsubHealthData();
+      unsubMedicalID();
     };
   }, [user]);
 
@@ -527,6 +609,36 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const addCycle = async (cycle: Omit<TreatmentCycle, 'id'>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/treatment_cycles`;
+    try {
+      await addDoc(collection(db, path), cycle);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
+  const updateCycle = async (id: string, cycle: Partial<TreatmentCycle>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/treatment_cycles/${id}`;
+    try {
+      await updateDoc(doc(db, path), cycle);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const deleteCycle = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/treatment_cycles/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
   const deleteExam = async (id: string) => {
     if (!user) return;
     const path = `users/${user.uid}/exams/${id}`;
@@ -551,10 +663,34 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const updateHealthData = async (data: Partial<HealthData>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/settings/health_data`;
+    try {
+      await setDoc(doc(db, `users/${user.uid}/settings`, 'health_data'), { ...healthData, ...data }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
+  const updateMedicalID = async (data: Partial<MedicalID>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/settings/medical_id`;
+    try {
+      await setDoc(doc(db, `users/${user.uid}/settings`, 'medical_id'), { 
+        ...medicalID, 
+        ...data,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
   return (
     <HealthContext.Provider value={{ 
-      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, loading, pinnedMetrics,
-      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, togglePinnedMetric 
+      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, loading, pinnedMetrics, healthData, medicalID,
+      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, togglePinnedMetric, updateHealthData, updateMedicalID, addCycle, updateCycle, deleteCycle 
     }}>
       {children}
     </HealthContext.Provider>
@@ -570,77 +706,153 @@ const useHealth = () => {
 // --- Components ---
 
 const MedicalIDView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user } = useHealth();
+  const { user, medicalID, updateMedicalID, healthData, medications } = useHealth();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editID, setEditID] = useState<MedicalID | null>(null);
+
+  useEffect(() => {
+    if (medicalID) setEditID(medicalID);
+  }, [medicalID]);
+
+  if (!editID) return null;
+
+  const handleSave = async () => {
+    await updateMedicalID(editID);
+    setIsEditing(false);
+  };
+
+  const calculateAge = (birthDate: string) => {
+    const today = new Date();
+    const birth = new Date(birthDate);
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return age;
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const SectionHeader = ({ title, onAction, actionLabel = "Editar" }: { title: string, onAction?: () => void, actionLabel?: string }) => (
+    <div className="flex justify-between items-center mb-2 mt-6">
+      <h3 className="text-red-500 font-bold text-lg">{title}</h3>
+      {onAction && (
+        <button onClick={onAction} className="text-blue-500 font-medium">{actionLabel}</button>
+      )}
+    </div>
+  );
+
   return (
     <motion.div 
       initial={{ y: '100%' }}
       animate={{ y: 0 }}
       exit={{ y: '100%' }}
       transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-      className="fixed inset-0 bg-apple-background z-[150] overflow-y-auto pb-32"
+      className="fixed inset-0 bg-white z-[150] overflow-y-auto pb-32"
     >
       <div className="p-5 pt-12">
-        <div className="flex justify-between items-center mb-6">
-          <button onClick={onClose} className="text-blue-500 font-medium">Cancelar</button>
-          <span className="font-bold">Ficha Médica</span>
-          <button className="text-blue-500 font-bold">Editar</button>
+        <div className="flex justify-between items-center mb-8">
+          <button onClick={onClose} className="text-blue-500">
+            <ChevronLeft size={28} />
+          </button>
+          <div className="flex items-center gap-1">
+            <span className="text-red-500 text-2xl font-black">*</span>
+            <span className="font-bold text-lg text-red-500">Ficha Médica</span>
+          </div>
+          <div className="w-10" /> {/* Spacer */}
         </div>
 
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-24 h-24 rounded-full bg-apple-border overflow-hidden mb-4 border-4 border-white shadow-sm">
+        <div className="mb-8">
+          <h4 className="text-apple-text-secondary font-medium mb-4">Acesso de Emergência</h4>
+          <div className="flex justify-between items-center py-2">
+            <span className="text-apple-text-primary text-lg">Mostrar Quando Bloqueado</span>
+            <button 
+              onClick={() => updateMedicalID({ showOnLockScreen: !editID.showOnLockScreen })}
+              className={`w-12 h-7 rounded-full transition-colors relative ${editID.showOnLockScreen ? 'bg-green-500' : 'bg-apple-border'}`}
+            >
+              <motion.div 
+                animate={{ x: editID.showOnLockScreen ? 22 : 2 }}
+                className="w-6 h-6 bg-white rounded-full shadow-sm absolute top-0.5"
+              />
+            </button>
+          </div>
+          <p className="text-apple-text-muted text-sm mt-2 leading-relaxed">
+            Para exibir sua Ficha Médica quando o iPhone estiver bloqueado, toque em Emergência e depois em Ficha Médica.
+          </p>
+        </div>
+
+        <SectionHeader title="Foto e Informações" onAction={() => {}} />
+        <div className="flex justify-between items-center py-4">
+          <div>
+            <h2 className="text-2xl font-bold">{healthData?.firstName} {healthData?.lastName}</h2>
+            <p className="text-apple-text-primary text-lg">{healthData ? calculateAge(healthData.birthDate) : '--'} anos</p>
+          </div>
+          <div className="w-20 h-20 rounded-full bg-apple-border overflow-hidden border-2 border-white shadow-sm">
             {user?.photoURL ? (
               <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             ) : (
-              <UserIcon size={48} className="text-apple-text-secondary w-full h-full p-4" />
+              <UserIcon size={40} className="text-apple-text-secondary w-full h-full p-4" />
             )}
           </div>
-          <h2 className="text-2xl font-bold">{user?.displayName || 'Matheus Celso'}</h2>
-          <p className="text-apple-text-secondary font-medium">28 anos</p>
         </div>
 
-        <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border mb-6">
-          <div className="p-4">
-            <h3 className="text-red-500 font-bold text-xs uppercase tracking-wider mb-2">Condições Médicas</h3>
-            <p className="font-semibold">Linfoma de Hodgkin (Em tratamento)</p>
+        <SectionHeader title="Gravidez" onAction={() => {}} actionLabel="Adicionar" />
+        <p className="text-apple-text-primary text-lg mb-4">{editID.pregnancy || '--'}</p>
+
+        <SectionHeader title="Medicamentos" onAction={() => {}} />
+        <div className="space-y-1 mb-4">
+          {medications.filter(m => m.active).length > 0 ? (
+            medications.filter(m => m.active).map(m => (
+              <p key={m.id} className="text-apple-text-primary text-lg">{m.name}</p>
+            ))
+          ) : (
+            <p className="text-apple-text-primary text-lg">--</p>
+          )}
+        </div>
+
+        <SectionHeader title="Alergias" onAction={() => {}} actionLabel="Adicionar" />
+        <p className="text-apple-text-primary text-lg mb-4">{editID.allergies || '--'}</p>
+
+        <SectionHeader title="Contatos de Emergência" onAction={() => {}} />
+        <div className="space-y-4 mb-4">
+          {editID.emergencyContacts.map((contact, idx) => (
+            <div key={idx}>
+              <p className="text-apple-text-muted font-medium">{contact.relationship}</p>
+              <p className="text-apple-text-primary font-bold text-lg">{contact.name}</p>
+              <p className="text-blue-500 text-lg">{contact.phone}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-apple-text-muted text-sm mt-4 leading-relaxed">
+          Quando você usa o SOS de Emergência para ligar para os serviços de emergência, seus contatos de emergência que tenham um número de celular também receberão uma mensagem com a sua localização atual. <span className="text-blue-500">Saiba Mais sobre o SOS de Emergência</span>
+        </p>
+
+        <SectionHeader title="Problemas de Saúde" onAction={() => {}} />
+        <p className="text-apple-text-primary text-lg mb-4">{editID.medicalConditions || '--'}</p>
+
+        <SectionHeader title="Informações Adicionais" onAction={() => {}} />
+        <div className="space-y-2 mb-4">
+          <div className="flex justify-between items-center">
+            <span className="text-apple-text-primary text-lg">Altura</span>
+            <span className="text-apple-text-primary text-lg">{editID.height} cm</span>
           </div>
-          <div className="p-4">
-            <h3 className="text-red-500 font-bold text-xs uppercase tracking-wider mb-2">Alergias e Reações</h3>
-            <p className="font-semibold">Nenhuma conhecida</p>
-          </div>
-          <div className="p-4">
-            <h3 className="text-red-500 font-bold text-xs uppercase tracking-wider mb-2">Medicamentos</h3>
-            <p className="font-semibold">Dexametasona, Ondansetrona</p>
+          <div className="flex justify-between items-center">
+            <span className="text-apple-text-primary text-lg">Peso</span>
+            <span className="text-apple-text-primary text-lg">{editID.weight} kg</span>
           </div>
         </div>
 
-        <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border mb-6">
-          <div className="p-4 flex justify-between">
-            <span className="text-apple-text-secondary font-medium">Tipo Sanguíneo</span>
-            <span className="font-bold">O+</span>
-          </div>
-          <div className="p-4 flex justify-between">
-            <span className="text-apple-text-secondary font-medium">Doador de Órgãos</span>
-            <span className="font-bold">Sim</span>
-          </div>
-          <div className="p-4 flex justify-between">
-            <span className="text-apple-text-secondary font-medium">Peso</span>
-            <span className="font-bold">72 kg</span>
-          </div>
-          <div className="p-4 flex justify-between">
-            <span className="text-apple-text-secondary font-medium">Altura</span>
-            <span className="font-bold">1,78 m</span>
-          </div>
+        <SectionHeader title="Notas" onAction={() => {}} />
+        <div className="text-apple-text-primary text-lg mb-8 whitespace-pre-line">
+          {editID.notes || '--'}
         </div>
 
-        <h3 className="text-apple-text-secondary font-bold text-xs uppercase tracking-wider mb-3 ml-4">Contatos de Emergência</h3>
-        <div className="apple-card p-4 flex justify-between items-center mb-8">
-          <div>
-            <p className="font-bold">Ana Silva</p>
-            <p className="text-xs text-apple-text-secondary">Mãe</p>
-          </div>
-          <button className="w-10 h-10 bg-green-500 text-white rounded-full flex items-center justify-center shadow-sm">
-            <Smartphone size={20} />
-          </button>
+        <div className="text-apple-text-muted text-sm mt-12">
+          Atualização: {new Date(editID.updatedAt).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' })}
         </div>
       </div>
     </motion.div>
@@ -674,6 +886,211 @@ const GenericDetailView: React.FC<{ title: string, onClose: () => void }> = ({ t
             Nenhuma informação disponível para {title} no momento.
           </p>
         </div>
+      </div>
+    </motion.div>
+  );
+};
+
+const HealthDataView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { healthData, updateHealthData, user } = useHealth();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editData, setEditData] = useState<HealthData | null>(null);
+
+  useEffect(() => {
+    if (healthData) setEditData(healthData);
+  }, [healthData]);
+
+  if (!editData) return null;
+
+  const handleSave = async () => {
+    await updateHealthData(editData);
+    setIsEditing(false);
+  };
+
+  const calculateAge = (birthDate: string) => {
+    const today = new Date();
+    const birth = new Date(birthDate);
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return age;
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  return (
+    <motion.div 
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+      className="fixed inset-0 bg-white z-[150] overflow-y-auto pb-32"
+    >
+      <div className="p-5 pt-12">
+        <div className="flex justify-between items-center mb-8">
+          <button onClick={onClose} className="text-blue-500">
+            <ChevronLeft size={28} />
+          </button>
+          <span className="font-bold text-lg">Dados de Saúde</span>
+          <button 
+            onClick={() => isEditing ? handleSave() : setIsEditing(true)}
+            className="text-blue-500 font-bold"
+          >
+            {isEditing ? 'OK' : 'Editar'}
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center mb-10">
+          <div className="w-24 h-24 rounded-full bg-apple-border overflow-hidden mb-4 border-4 border-white shadow-sm">
+            {user?.photoURL ? (
+              <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            ) : (
+              <UserIcon size={48} className="text-apple-text-secondary w-full h-full p-4" />
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-1 divide-y divide-apple-border">
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Nome</span>
+            {isEditing ? (
+              <input 
+                type="text" 
+                value={editData.firstName}
+                onChange={e => setEditData({...editData, firstName: e.target.value})}
+                className="text-right outline-none text-apple-text-secondary"
+              />
+            ) : (
+              <span className="text-apple-text-secondary">{editData.firstName}</span>
+            )}
+          </div>
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Sobrenome</span>
+            {isEditing ? (
+              <input 
+                type="text" 
+                value={editData.lastName}
+                onChange={e => setEditData({...editData, lastName: e.target.value})}
+                className="text-right outline-none text-apple-text-secondary"
+              />
+            ) : (
+              <span className="text-apple-text-secondary">{editData.lastName}</span>
+            )}
+          </div>
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Data de Nascimento</span>
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <input 
+                  type="date" 
+                  value={editData.birthDate}
+                  onChange={e => setEditData({...editData, birthDate: e.target.value})}
+                  className="text-right outline-none text-apple-text-secondary"
+                />
+              ) : (
+                <span className="text-apple-text-secondary">
+                  {formatDate(editData.birthDate)} ({calculateAge(editData.birthDate)})
+                </span>
+              )}
+              <ChevronRight size={18} className="text-apple-border" />
+            </div>
+          </div>
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Sexo</span>
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <select 
+                  value={editData.sex}
+                  onChange={e => setEditData({...editData, sex: e.target.value})}
+                  className="text-right outline-none text-apple-text-secondary bg-transparent"
+                >
+                  <option value="Masculino">Masculino</option>
+                  <option value="Feminino">Feminino</option>
+                  <option value="Outro">Outro</option>
+                  <option value="Não Definido">Não Definido</option>
+                </select>
+              ) : (
+                <span className="text-apple-text-secondary">{editData.sex}</span>
+              )}
+              <ChevronRight size={18} className="text-apple-border" />
+            </div>
+          </div>
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Grupo Sanguíneo</span>
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <select 
+                  value={editData.bloodType}
+                  onChange={e => setEditData({...editData, bloodType: e.target.value})}
+                  className="text-right outline-none text-apple-text-secondary bg-transparent"
+                >
+                  <option value="A+">A+</option>
+                  <option value="A-">A-</option>
+                  <option value="B+">B+</option>
+                  <option value="B-">B-</option>
+                  <option value="AB+">AB+</option>
+                  <option value="AB-">AB-</option>
+                  <option value="O+">O+</option>
+                  <option value="O-">O-</option>
+                  <option value="Não Definido">Não Definido</option>
+                </select>
+              ) : (
+                <span className="text-apple-text-secondary">{editData.bloodType}</span>
+              )}
+              <ChevronRight size={18} className="text-apple-border" />
+            </div>
+          </div>
+          <div className="py-3 flex justify-between items-center">
+            <span className="text-apple-text-primary font-medium">Tipo de Pele (Fitzpatrick)</span>
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <select 
+                  value={editData.skinType}
+                  onChange={e => setEditData({...editData, skinType: e.target.value})}
+                  className="text-right outline-none text-apple-text-secondary bg-transparent"
+                >
+                  <option value="Tipo I">Tipo I</option>
+                  <option value="Tipo II">Tipo II</option>
+                  <option value="Tipo III">Tipo III</option>
+                  <option value="Tipo IV">Tipo IV</option>
+                  <option value="Tipo V">Tipo V</option>
+                  <option value="Tipo VI">Tipo VI</option>
+                  <option value="Não Definido">Não Definido</option>
+                </select>
+              ) : (
+                <span className="text-apple-text-secondary">{editData.skinType}</span>
+              )}
+              <ChevronRight size={18} className="text-apple-border" />
+            </div>
+          </div>
+          <div className="py-6 flex justify-between items-center border-t-8 border-apple-background">
+            <span className="text-apple-text-primary font-medium">Cadeira de Rodas</span>
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <select 
+                  value={editData.isWheelchairUser ? 'Sim' : 'Não'}
+                  onChange={e => setEditData({...editData, isWheelchairUser: e.target.value === 'Sim'})}
+                  className="text-right outline-none text-apple-text-secondary bg-transparent"
+                >
+                  <option value="Sim">Sim</option>
+                  <option value="Não">Não</option>
+                </select>
+              ) : (
+                <span className="text-apple-text-secondary">{editData.isWheelchairUser ? 'Sim' : 'Não'}</span>
+              )}
+              <ChevronRight size={18} className="text-apple-border" />
+            </div>
+          </div>
+        </div>
+        
+        <p className="text-apple-text-muted text-xs mt-4 leading-relaxed">
+          Registre impulsos em vez de passos no Apple Watch no app Atividade e em exercícios com cadeira de rodas no app Exercício. Os impulsos são salvos no app Saúde. Quando esta opção está ativada, o iPhone não registra passos.
+        </p>
       </div>
     </motion.div>
   );
@@ -717,7 +1134,8 @@ const ProfileView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     >
       <AnimatePresence>
         {selectedItem === 'Ficha Médica' && <MedicalIDView onClose={() => setSelectedItem(null)} />}
-        {selectedItem && selectedItem !== 'Ficha Médica' && (
+        {selectedItem === 'Dados de Saúde' && <HealthDataView onClose={() => setSelectedItem(null)} />}
+        {selectedItem && !['Ficha Médica', 'Dados de Saúde'].includes(selectedItem) && (
           <GenericDetailView title={selectedItem} onClose={() => setSelectedItem(null)} />
         )}
       </AnimatePresence>
@@ -1085,16 +1503,19 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
 
   return (
     <div className="pb-32 pt-20 px-5">
-      <div className="flex justify-between items-center mb-10">
-        <h1 className="apple-title mb-0">Resumo</h1>
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <p className="text-apple-text-muted text-[10px] font-bold uppercase tracking-widest mb-1">Bom dia,</p>
+          <h1 className="apple-title mb-0">{user?.displayName?.split(' ')[0] || 'Paciente'}</h1>
+        </div>
         <button 
           onClick={onOpenProfile}
-          className="w-10 h-10 rounded-full bg-blue-200 flex items-center justify-center overflow-hidden border-2 border-white shadow-sm active:scale-90 transition-transform"
+          className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center overflow-hidden border-2 border-white shadow-lg active:scale-90 transition-transform"
         >
           {user?.photoURL ? (
             <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           ) : (
-            <span className="text-blue-600 font-bold text-sm">
+            <span className="text-white font-black text-lg">
               {user?.displayName?.split(' ').map(n => n[0]).join('').toUpperCase() || 'MC'}
             </span>
           )}
@@ -1112,77 +1533,47 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
         return (
           <div 
             onClick={() => onSelectCategory('Ciclo de quimioterapia')}
-            className="apple-card p-6 mb-8 relative overflow-hidden cursor-pointer active:scale-[0.98] transition-transform"
+            className="apple-card p-6 mb-8 relative overflow-hidden cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-br from-white to-apple-background"
           >
             {/* Background Accent */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-apple-activity/5 rounded-full -mr-16 -mt-16 blur-2xl" />
+            <div className="absolute top-0 right-0 w-40 h-40 bg-apple-activity/10 rounded-full -mr-20 -mt-20 blur-3xl" />
             
             <div className="flex justify-between items-start mb-6 relative z-10">
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <div className="w-2 h-2 rounded-full bg-apple-activity animate-pulse" />
-                  <h3 className="text-apple-text-secondary text-[10px] font-bold uppercase tracking-[0.1em]">Ciclo em Andamento</h3>
+                  <h3 className="text-apple-text-secondary text-[10px] font-bold uppercase tracking-[0.1em]">Tratamento Ativo</h3>
                 </div>
                 <p className="text-2xl font-black text-apple-text-primary tracking-tight">{currentCycle.name}</p>
               </div>
-              <div className="text-right">
-                <p className="text-3xl font-black text-apple-activity leading-none">{currentDay}</p>
-                <p className="text-[10px] font-bold text-apple-text-muted uppercase">Dia do Ciclo</p>
+              <div className="bg-apple-activity/10 px-3 py-1 rounded-full">
+                <p className="text-sm font-bold text-apple-activity">Dia {currentDay}</p>
               </div>
             </div>
 
-            {/* Detailed Progress Bar */}
             <div className="relative mb-6">
-              <div className="w-full h-4 bg-apple-border/30 rounded-full overflow-hidden backdrop-blur-sm">
+              <div className="w-full h-3 bg-apple-border/30 rounded-full overflow-hidden backdrop-blur-sm">
                 <motion.div 
                   initial={{ width: 0 }}
                   animate={{ width: `${progress}%` }}
                   transition={{ duration: 1, ease: "easeOut" }}
                   className="h-full bg-gradient-to-r from-apple-activity to-[#FF5E7D] relative"
-                >
-                  <div className="absolute inset-0 bg-[linear-gradient(45deg,rgba(255,255,255,0.2)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.2)_50%,rgba(255,255,255,0.2)_75%,transparent_75%,transparent)] bg-[length:20px_20px] animate-[shimmer_2s_linear_infinite]" />
-                </motion.div>
-              </div>
-              
-              {/* Milestone Markers */}
-              <div className="absolute top-0 left-0 w-full h-full flex justify-between px-1 pointer-events-none">
-                {[0, 25, 50, 75, 100].map((mark) => (
-                  <div 
-                    key={mark} 
-                    className={`w-0.5 h-full ${mark <= progress ? 'bg-white/30' : 'bg-apple-border/50'}`} 
-                  />
-                ))}
+                />
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4 mb-6">
-              <div className="text-center">
-                <p className="text-xs font-bold text-apple-text-primary">{currentCycle.currentCycle} de {currentCycle.totalCycles}</p>
-                <p className="text-[9px] font-bold text-apple-text-muted uppercase">Ciclo Atual</p>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-white/50 rounded-xl p-2 text-center border border-apple-border/50">
+                <p className="text-xs font-bold text-apple-text-primary">{currentCycle.currentCycle}/{currentCycle.totalCycles}</p>
+                <p className="text-[8px] font-bold text-apple-text-muted uppercase">Ciclo</p>
               </div>
-              <div className="text-center border-x border-apple-border">
-                <p className="text-xs font-bold text-apple-text-primary">{remainingDays} dias</p>
-                <p className="text-[9px] font-bold text-apple-text-muted uppercase">Restantes</p>
+              <div className="bg-white/50 rounded-xl p-2 text-center border border-apple-border/50">
+                <p className="text-xs font-bold text-apple-text-primary">{remainingDays}d</p>
+                <p className="text-[8px] font-bold text-apple-text-muted uppercase">Restam</p>
               </div>
-              <div className="text-center">
-                <p className="text-xs font-bold text-apple-text-primary">{currentCycle.totalDays} dias</p>
-                <p className="text-[9px] font-bold text-apple-text-muted uppercase">Duração Total</p>
-              </div>
-            </div>
-
-            <div className="bg-apple-background/50 rounded-2xl p-4 border border-apple-border/50">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm text-apple-activity">
-                  <Calendar size={20} />
-                </div>
-                <div className="flex-grow">
-                  <p className="text-[10px] font-bold text-apple-text-muted uppercase">Próximo Marco</p>
-                  <p className="text-sm font-bold text-apple-text-primary">Infusão de Manutenção</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm font-black text-apple-activity">Em 12 dias</p>
-                  <p className="text-[9px] font-bold text-apple-text-muted uppercase">16 de Abr</p>
-                </div>
+              <div className="bg-white/50 rounded-xl p-2 text-center border border-apple-border/50">
+                <p className="text-xs font-bold text-apple-text-primary">{currentCycle.totalDays}d</p>
+                <p className="text-[8px] font-bold text-apple-text-muted uppercase">Total</p>
               </div>
             </div>
           </div>
@@ -1191,11 +1582,11 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
 
       <div className="mb-8">
         <div className="flex justify-between items-end mb-4">
-          <h2 className="apple-section-header mb-0">Fixados</h2>
-          <button onClick={onOpenEditPinned} className="text-blue-500 font-medium text-sm">Editar</button>
+          <h2 className="apple-section-header mb-0">Métricas em Foco</h2>
+          <button onClick={onOpenEditPinned} className="text-blue-500 font-bold text-[11px] uppercase tracking-wider">Ajustar</button>
         </div>
         
-        <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
           {pinnedMetrics.map(metricId => {
             const metricDef = ALL_METRICS.find(m => m.id === metricId);
             if (!metricDef) return null;
@@ -1206,25 +1597,20 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
                 <div 
                   key={metricId}
                   onClick={() => onSelectCategory('Sintomas')}
-                  className="apple-card p-4 flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform"
+                  className="apple-card p-4 flex flex-col justify-between h-32 cursor-pointer active:scale-[0.98] transition-transform"
                 >
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${metricDef.color}15`, color: metricDef.color }}>
-                    {metricDef.icon}
+                  <div className="flex justify-between items-start">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${metricDef.color}15`, color: metricDef.color }}>
+                      {metricDef.icon}
+                    </div>
+                    <ChevronRight size={14} className="text-apple-text-muted" />
                   </div>
-                  <div className="flex-grow">
-                    <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-0.5">{metricDef.name}</p>
-                    <p className="font-bold text-apple-text-primary">
-                      {latestSymptom ? latestSymptom.intensity : 'Nenhum registro'}
+                  <div>
+                    <p className="text-[9px] font-bold text-apple-text-muted uppercase mb-0.5 tracking-tight">{metricDef.name}</p>
+                    <p className="text-sm font-black text-apple-text-primary truncate">
+                      {latestSymptom ? latestSymptom.intensity : 'Sem registro'}
                     </p>
                   </div>
-                  {latestSymptom && (
-                    <div className="text-right">
-                      <p className="text-[10px] font-bold text-apple-text-muted">
-                        {new Date(latestSymptom.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}
-                      </p>
-                    </div>
-                  )}
-                  <ChevronRight size={16} className="text-apple-text-muted ml-1" />
                 </div>
               );
             }
@@ -1232,18 +1618,29 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
             const latest = getLatest(metricId);
             if (metricId === 'tumor_size') {
               return (
-                <MetricCard 
+                <div 
                   key={metricId}
-                  title="Evolução do Tumor" 
-                  value={latest?.value || "--"} 
-                  unit="mm" 
-                  icon={<Activity />} 
-                  color="#5E5CE6"
-                  data={getHistory('tumor_size')}
-                  subtitle={latest ? `A última medição foi de ${latest.value}mm em ${new Date(latest.timestamp).toLocaleDateString()}.` : "Nenhum dado registrado ainda."}
-                  lastUpdated={latest ? "Ontem" : undefined}
                   onClick={() => onSelectCategory('Exames')}
-                />
+                  className="apple-card p-4 col-span-2 flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-r from-indigo-50/30 to-white"
+                >
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-500 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                    <Activity size={24} />
+                  </div>
+                  <div className="flex-grow">
+                    <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider">Evolução do Tumor</p>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-apple-text-primary">{latest?.value || "--"}</span>
+                      <span className="text-xs font-bold text-apple-text-muted">mm</span>
+                    </div>
+                  </div>
+                  <div className="w-20 h-10">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={getHistory('tumor_size')}>
+                        <Line type="monotone" dataKey="value" stroke="#5E5CE6" strokeWidth={3} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               );
             }
 
@@ -1251,136 +1648,138 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
               return (
                 <div 
                   key={metricId}
-                  className="apple-card p-4 cursor-pointer active:scale-95 transition-transform" 
-                  onClick={() => onSelectCategory('Sinais vitais')}
+                  className="apple-card p-4 cursor-pointer active:scale-95 transition-transform flex flex-col justify-between h-32" 
+                  onClick={() => onSelectCategory('Exames')}
                 >
-                  <p className="text-[10px] font-bold text-apple-text-muted uppercase mb-1">{metricDef.name}</p>
-                  <p className="text-xl font-black" style={{ color: metricDef.color }}>{latest?.value.toLocaleString() || '--'}</p>
-                  <p className="text-[10px] text-apple-text-muted">{latest?.unit || ''}</p>
+                  <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-500">
+                    <FileText size={16} />
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-bold text-apple-text-muted uppercase mb-0.5 tracking-tight">{metricDef.name}</p>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-lg font-black" style={{ color: metricDef.color }}>{latest?.value.toLocaleString() || '--'}</span>
+                      <span className="text-[8px] font-bold text-apple-text-muted">{latest?.unit || ''}</span>
+                    </div>
+                  </div>
                 </div>
               );
             }
 
             return (
-              <MetricCard 
+              <div 
                 key={metricId}
-                title={metricDef.name} 
-                value={latest?.value.toLocaleString() || (metricId === 'temperature' ? "0.0" : "0")} 
-                unit={latest?.unit || (metricId === 'steps' ? 'passos' : metricId === 'heart_rate' ? 'BPM' : '°C')} 
-                icon={metricDef.icon} 
-                color={metricDef.color}
-                data={getHistory(metricId)}
-                lastUpdated={latest ? new Date(latest.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined}
                 onClick={() => onSelectCategory(metricDef.category)}
-              />
+                className="apple-card p-4 flex flex-col justify-between h-32 cursor-pointer active:scale-[0.98] transition-transform"
+              >
+                <div className="flex justify-between items-start">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${metricDef.color}15`, color: metricDef.color }}>
+                    {metricDef.icon}
+                  </div>
+                  <div className="w-12 h-6">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={getHistory(metricId)}>
+                        <Line type="monotone" dataKey="value" stroke={metricDef.color} strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-apple-text-muted uppercase mb-0.5 tracking-tight">{metricDef.name}</p>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-lg font-black text-apple-text-primary">{latest?.value.toLocaleString() || (metricId === 'temperature' ? "0.0" : "0")}</span>
+                    <span className="text-[8px] font-bold text-apple-text-muted">{latest?.unit || (metricId === 'steps' ? 'passos' : metricId === 'heart_rate' ? 'BPM' : '°C')}</span>
+                  </div>
+                </div>
+              </div>
             );
           })}
         </div>
       </div>
 
       <div className="mb-8">
-        <h2 className="apple-section-header">Medicamentos</h2>
-        <div className="space-y-3">
-          {medications.filter(m => !m.isSOS && m.active).slice(0, 2).map(m => (
-            <div key={m.id} className="apple-card p-4 flex justify-between items-center">
-              <div>
-                <div className="font-bold">{m.name}</div>
-                <div className="text-apple-text-secondary text-xs">
-                  {m.intensity} {m.unit} • {m.type}
+        <div className="flex justify-between items-end mb-4">
+          <h2 className="apple-section-header mb-0">Próximas Doses</h2>
+          <button onClick={() => onSelectTab('medications')} className="text-blue-500 font-bold text-[11px] uppercase tracking-wider">Ver Todos</button>
+        </div>
+        <div className="flex gap-4 overflow-x-auto pb-4 -mx-5 px-5 no-scrollbar">
+          {medications.filter(m => !m.isSOS && m.active).map(m => (
+            <div 
+              key={m.id} 
+              onClick={() => onSelectTab('medications')}
+              className="apple-card p-4 min-w-[200px] flex flex-col justify-between h-36 bg-gradient-to-br from-white to-blue-50/30 border-blue-100/50"
+            >
+              <div className="flex justify-between items-start">
+                <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm text-blue-500">
+                  <Pill size={20} />
                 </div>
+                <div className="bg-blue-500 text-white text-[9px] font-black px-2 py-1 rounded-full">HOJE</div>
               </div>
-              <button 
-                onClick={() => onSelectTab('medications')}
-                className="bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold"
-              >
-                Registrar
-              </button>
+              <div>
+                <p className="font-black text-apple-text-primary leading-tight mb-1">{m.name}</p>
+                <p className="text-[10px] font-bold text-apple-text-muted uppercase">
+                  {m.intensity} {m.unit} • {m.schedule?.times[0] || 'Manhã'}
+                </p>
+              </div>
             </div>
           ))}
-          <div 
-            onClick={() => onSelectTab('medications')}
-            className="apple-card flex items-center justify-between p-4 cursor-pointer active:bg-apple-background transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <div className="text-blue-500"><Activity size={20} /></div>
-              <span className="font-semibold">Ver Toda a Medicação</span>
+          {medications.filter(m => !m.isSOS && m.active).length === 0 && (
+            <div className="apple-card p-6 w-full text-center text-apple-text-muted text-sm italic">
+              Nenhuma medicação agendada para hoje.
             </div>
-            <ChevronRight size={18} className="text-apple-text-muted" />
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mb-8">
+        <div className="col-span-2">
+          <h2 className="apple-section-header mb-4">Atividade Recente</h2>
+        </div>
+        
+        <div 
+          onClick={onOpenSymptomHistory}
+          className="apple-card p-4 flex flex-col justify-between h-40 cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-br from-white to-orange-50/20"
+        >
+          <div className="flex justify-between items-start">
+            <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center text-orange-500">
+              <Activity size={22} />
+            </div>
+            <ChevronRight size={16} className="text-apple-text-muted" />
+          </div>
+          <div>
+            <p className="text-xs font-black text-apple-text-primary mb-1">Sintomas</p>
+            {symptomLogs.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold text-orange-600 truncate">{symptomLogs[0].type}</p>
+                <p className="text-[9px] text-apple-text-muted">{new Date(symptomLogs[0].timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</p>
+              </div>
+            ) : (
+              <p className="text-[10px] text-apple-text-muted">Nenhum registro</p>
+            )}
           </div>
         </div>
-      </div>
 
-      <div className="mb-8">
-        <div className="flex justify-between items-end mb-4">
-          <h2 className="apple-section-header mb-0">Sintomas Recentes</h2>
-          <button onClick={onOpenSymptomHistory} className="text-blue-500 font-medium text-sm">Ver Tudo</button>
+        <div 
+          onClick={() => onSelectCategory('Exames')}
+          className="apple-card p-4 flex flex-col justify-between h-40 cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-br from-white to-blue-50/20"
+        >
+          <div className="flex justify-between items-start">
+            <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-500">
+              <FileText size={22} />
+            </div>
+            <ChevronRight size={16} className="text-apple-text-muted" />
+          </div>
+          <div>
+            <p className="text-xs font-black text-apple-text-primary mb-1">Exames</p>
+            {exams.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold text-blue-600 truncate">{exams[0].examName}</p>
+                <p className="text-[9px] text-apple-text-muted">{new Date(exams[0].date).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</p>
+              </div>
+            ) : (
+              <p className="text-[10px] text-apple-text-muted">Nenhum registro</p>
+            )}
+          </div>
         </div>
-        <div className="space-y-3">
-          {symptomLogs.slice(0, 2).map(log => (
-            <div 
-              key={log.id} 
-              onClick={onOpenSymptomHistory}
-              className="apple-card p-4 flex items-center gap-4 cursor-pointer active:bg-apple-background transition-colors"
-            >
-              <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center text-orange-500">
-                <Activity size={20} />
-              </div>
-              <div className="flex-grow">
-                <p className="font-bold text-sm">{log.type}</p>
-                <p className="text-[10px] text-apple-text-secondary uppercase font-bold">{log.intensity} • {new Date(log.timestamp).toLocaleDateString('pt-BR')}</p>
-              </div>
-              <ChevronRight size={16} className="text-apple-text-muted" />
-            </div>
-          ))}
-          {symptomLogs.length === 0 && (
-            <div className="apple-card p-4 text-center text-apple-text-secondary text-sm">
-              Nenhum sintoma registrado.
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="mb-8">
-        <h2 className="apple-section-header">Exames Recentes</h2>
-        <div className="space-y-3">
-          {exams.slice(0, 2).map(exam => (
-            <div 
-              key={exam.id} 
-              onClick={() => onSelectExam(exam)}
-              className="apple-card p-4 flex items-center gap-4 cursor-pointer active:bg-apple-background transition-colors"
-            >
-              <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-500">
-                <FileText size={20} />
-              </div>
-              <div className="flex-grow">
-                <p className="font-bold text-sm">{exam.examName}</p>
-                <p className="text-[10px] text-apple-text-secondary uppercase font-bold">{exam.type} • {new Date(exam.date).toLocaleDateString('pt-BR')}</p>
-              </div>
-              <ChevronRight size={16} className="text-apple-text-muted" />
-            </div>
-          ))}
-          {exams.length === 0 && (
-            <div className="apple-card p-4 text-center text-apple-text-secondary text-sm">
-              Nenhum exame registrado.
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="mb-8">
-        <h2 className="apple-section-header">Destaques</h2>
-        {!pinnedMetrics.includes('tumor_size') && (
-          <MetricCard 
-            title="Evolução do Tumor" 
-            value={tumorSize?.value || "--"} 
-            unit="mm" 
-            icon={<Activity />} 
-            color="#5E5CE6"
-            data={getHistory('tumor_size')}
-            subtitle={tumorSize ? `A última medição foi de ${tumorSize.value}mm em ${new Date(tumorSize.timestamp).toLocaleDateString()}.` : "Nenhum dado registrado ainda."}
-            lastUpdated={tumorSize ? "Ontem" : undefined}
-          />
-        )}
       </div>
     </div>
   );
@@ -2391,6 +2790,8 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   );
 };
 
+const EXAM_TYPES = ['Receita', 'Guia Médica', 'Atestado', 'Documento', 'Laudo'];
+
 const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => void }> = ({ onBack, onSelectExam }) => {
   const { exams, addExam, addSample } = useHealth();
   const [showAddFlow, setShowAddFlow] = useState(false);
@@ -2398,16 +2799,58 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [step, setStep] = useState(1); // 1: Choose Source, 2: Review/Edit
   const [formData, setFormData] = useState<Partial<Exam>>({
-    type: '',
+    type: 'Laudo',
     examName: '',
     doctorName: '',
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toLocaleDateString('en-CA'),
     fileData: '',
     fileType: '',
     analysis: '',
     timestamp: new Date().toISOString(),
     metrics: []
   });
+
+  // Filters
+  const [filterType, setFilterType] = useState<string>('Todos');
+  const [filterMonth, setFilterMonth] = useState<string>('Todos');
+
+  const filteredExams = exams.filter(exam => {
+    const matchesType = filterType === 'Todos' || exam.type === filterType;
+    const matchesMonth = filterMonth === 'Todos' || new Date(exam.date).toISOString().slice(0, 7) === filterMonth;
+    return matchesType && matchesMonth;
+  });
+
+  const availableMonths = Array.from(new Set(exams.map(e => new Date(e.date).toISOString().slice(0, 7)))).sort().reverse();
+
+  // Drag to scroll logic
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [startX, setStartX] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!scrollRef.current) return;
+    setIsDragging(true);
+    setStartX(e.pageX - scrollRef.current.offsetLeft);
+    setScrollLeft(scrollRef.current.scrollLeft);
+  };
+
+  const handleMouseLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || !scrollRef.current) return;
+    e.preventDefault();
+    const x = e.pageX - scrollRef.current.offsetLeft;
+    const walk = (x - startX) * 2; // scroll-fast
+    scrollRef.current.scrollLeft = scrollLeft - walk;
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2416,8 +2859,9 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
     setUploadError(null);
 
     // Check if it's a PDF and too large
-    if (file.type === 'application/pdf' && file.size > 1024 * 1024) {
-      setUploadError("O arquivo PDF é muito grande (máximo 1MB). Por favor, use uma versão menor ou uma foto.");
+    // Base64 expansion is ~33%, so 700KB binary becomes ~930KB string
+    if (file.type === 'application/pdf' && file.size > 700 * 1024) {
+      setUploadError("O arquivo PDF é muito grande (máximo 700KB). Por favor, use uma versão menor ou uma foto.");
       return;
     }
 
@@ -2435,9 +2879,10 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
         }
       }
 
-      // Final check for base64 size (Firestore limit is 1MB)
-      if (base64.length > 1.3 * 1024 * 1024) {
-        setUploadError("O arquivo ainda é muito grande para o sistema. Tente uma imagem com menor resolução.");
+      // Final check for base64 size (Firestore limit is 1MB per document)
+      // We aim for ~800KB for the base64 string to leave room for other fields
+      if (base64.length > 900 * 1024) {
+        setUploadError("O arquivo ainda é muito grande para o sistema. Tente uma imagem com menor resolução ou um PDF menor.");
         return;
       }
 
@@ -2579,12 +3024,18 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
               <div className="apple-card p-0 overflow-hidden divide-y divide-apple-border">
                 <div className="p-4">
                   <label className="text-[10px] font-bold text-apple-text-muted uppercase mb-1 block">Tipo de Documento</label>
-                  <input 
-                    type="text" 
+                  <select 
                     value={formData.type}
                     onChange={e => setFormData({...formData, type: e.target.value})}
-                    className="w-full font-semibold outline-none"
-                  />
+                    className="w-full font-semibold outline-none bg-transparent"
+                  >
+                    {EXAM_TYPES.map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                    {!EXAM_TYPES.includes(formData.type || '') && formData.type && (
+                      <option value={formData.type}>{formData.type}</option>
+                    )}
+                  </select>
                 </div>
                 <div className="p-4">
                   <label className="text-[10px] font-bold text-apple-text-muted uppercase mb-1 block">Nome do Exame</label>
@@ -2680,6 +3131,54 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
           <button onClick={() => setShowAddFlow(true)} className="text-blue-500 font-bold text-sm">Adicionar</button>
         </div>
 
+        {/* Filters */}
+        <div className="space-y-4 mb-6">
+          <div 
+            ref={scrollRef}
+            onMouseDown={handleMouseDown}
+            onMouseLeave={handleMouseLeave}
+            onMouseUp={handleMouseUp}
+            onMouseMove={handleMouseMove}
+            className={`flex gap-2 overflow-x-auto pb-2 no-scrollbar select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          >
+            <button 
+              onClick={() => setFilterType('Todos')}
+              className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all pointer-events-auto ${
+                filterType === 'Todos' ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-apple-text-muted border border-apple-border'
+              }`}
+            >
+              Todos
+            </button>
+            {EXAM_TYPES.map(t => (
+              <button 
+                key={t}
+                onClick={() => setFilterType(t)}
+                className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all pointer-events-auto ${
+                  filterType === t ? 'bg-blue-500 text-white shadow-md' : 'bg-white text-apple-text-muted border border-apple-border'
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Calendar size={16} className="text-apple-text-muted" />
+            <select 
+              value={filterMonth}
+              onChange={(e) => setFilterMonth(e.target.value)}
+              className="bg-transparent text-sm font-bold text-apple-text-secondary outline-none"
+            >
+              <option value="Todos">Todos os meses</option>
+              {availableMonths.map(m => (
+                <option key={m} value={m}>
+                  {new Date(m + '-01').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
         {exams.length === 0 ? (
           <div className="apple-card p-8 text-center">
             <div className="w-16 h-16 bg-apple-background rounded-2xl flex items-center justify-center mx-auto mb-4">
@@ -2697,9 +3196,19 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
               Adicionar Primeiro Exame
             </motion.button>
           </div>
+        ) : filteredExams.length === 0 ? (
+          <div className="apple-card p-8 text-center">
+            <p className="text-apple-text-secondary text-sm">Nenhum exame encontrado com os filtros selecionados.</p>
+            <button 
+              onClick={() => { setFilterType('Todos'); setFilterMonth('Todos'); }}
+              className="text-blue-500 font-bold text-sm mt-2"
+            >
+              Limpar Filtros
+            </button>
+          </div>
         ) : (
           <div className="space-y-4">
-            {exams.map(exam => (
+            {filteredExams.map(exam => (
               <motion.div 
                 key={exam.id} 
                 whileTap={{ scale: 0.98 }}
@@ -2709,7 +3218,7 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
                 <div className="flex justify-between items-start mb-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-500">
-                      <File size={20} />
+                      <FileIcon size={20} />
                     </div>
                     <div>
                       <p className="font-bold">{exam.examName}</p>
@@ -2718,7 +3227,7 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-bold text-apple-text-secondary">
-                      {new Date(exam.date).toLocaleDateString('pt-BR')}
+                      {new Date(exam.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
                     </p>
                     <p className="text-[10px] text-apple-text-muted">{exam.doctorName}</p>
                   </div>
@@ -2765,7 +3274,55 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const [copied, setCopied] = useState(false);
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+  const handleShare = async () => {
+    setIsSharing(true);
+    const shareData: ShareData = {
+      title: `Exame: ${exam.examName}`,
+      text: `Detalhes do Exame:\nNome: ${exam.examName}\nMédico: ${exam.doctorName}\nData: ${new Date(exam.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}\nAnálise: ${exam.analysis || 'N/A'}`,
+    };
+
+    try {
+      if (navigator.share) {
+        if (exam.fileData && exam.fileType) {
+          try {
+            const byteCharacters = atob(exam.fileData);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const fileExtension = exam.fileType.split('/')[1] || 'pdf';
+            const fileName = `${exam.examName.replace(/\s+/g, '_')}_${new Date(exam.date).toISOString().split('T')[0]}.${fileExtension}`;
+            const file = new File([byteArray], fileName, { type: exam.fileType });
+            
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                ...shareData,
+                files: [file]
+              });
+              return;
+            }
+          } catch (fileError) {
+            console.error("Error preparing file for share:", fileError);
+          }
+        }
+        await navigator.share(shareData);
+      } else {
+        const text = `${shareData.title}\n${shareData.text}`;
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch (error) {
+      console.error("Error sharing:", error);
+    } finally {
+      setIsSharing(false);
+    }
+  };
 
   const handleDelete = async () => {
     setIsDeleting(true);
@@ -2786,7 +3343,7 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
         const metric = e.metrics.find(m => m.type === metricType);
         return {
           date: new Date(e.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
-          fullDate: new Date(e.date).toLocaleDateString('pt-BR'),
+          fullDate: new Date(e.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' }),
           timestamp: new Date(e.date).getTime(),
           value: metric?.value
         };
@@ -2832,7 +3389,13 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
             Exames
           </button>
           <span className="font-bold text-sm">Detalhes</span>
-          <div className="w-12" />
+          <button 
+            onClick={handleShare}
+            disabled={isSharing}
+            className="text-blue-500 p-2 active:scale-90 transition-transform"
+          >
+            {isSharing ? <Loader2 size={20} className="animate-spin" /> : copied ? <Check size={20} className="text-green-500" /> : <Share2 size={20} />}
+          </button>
         </div>
 
         <div className="flex-grow min-h-0 overflow-y-auto p-6">
@@ -2851,7 +3414,7 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
             </div>
             <div className="p-4 flex justify-between">
               <span className="text-apple-text-secondary font-medium">Data</span>
-              <span className="font-bold">{new Date(exam.date).toLocaleDateString('pt-BR')}</span>
+              <span className="font-bold">{new Date(exam.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
             </div>
           </div>
 
@@ -2941,6 +3504,14 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
             </div>
           )}
 
+          <button 
+            onClick={handleShare}
+            disabled={isSharing}
+            className={`w-full font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-all mb-4 flex items-center justify-center gap-2 ${copied ? 'bg-green-500 text-white shadow-green-500/20' : 'bg-blue-500 text-white shadow-blue-500/20'}`}
+          >
+            {isSharing ? <Loader2 size={20} className="animate-spin" /> : copied ? <Check size={20} /> : <Share2 size={20} />}
+            {copied ? "Copiado para Transferência" : "Compartilhar Exame"}
+          </button>
           <button 
             onClick={() => setShowOriginal(true)}
             className="w-full bg-white text-blue-500 font-bold py-4 rounded-2xl border border-apple-border active:bg-apple-background transition-colors mb-4"
@@ -3422,11 +3993,279 @@ const EditPinnedView = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
+const ChemoCycleRegistrationFlow: React.FC<{ 
+  onClose: () => void; 
+  onSave: (cycle: Omit<TreatmentCycle, 'id'>) => Promise<void>;
+  initialData?: TreatmentCycle | null;
+  onDelete?: () => Promise<void>;
+}> = ({ onClose, onSave, initialData, onDelete }) => {
+  const [step, setStep] = useState(initialData ? 2 : 1);
+  const [type, setType] = useState<TreatmentCycle['type']>(initialData?.type || 'Quimioterapia');
+  const [startDate, setStartDate] = useState(initialData?.startDate ? new Date(initialData.startDate).toISOString().split('T')[0] : new Date().toLocaleDateString('en-CA'));
+  const [totalDays, setTotalDays] = useState(initialData?.totalDays?.toString() || '21');
+  const [currentCycle, setCurrentCycle] = useState(initialData?.currentCycle?.toString() || '1');
+  const [totalCycles, setTotalCycles] = useState(initialData?.totalCycles?.toString() || '6');
+  const [notes, setNotes] = useState(initialData?.notes || '');
+  const [name, setName] = useState(initialData?.name || '');
+
+  const handleNext = () => setStep(s => s + 1);
+  const handleBack = () => setStep(s => s - 1);
+
+  const handleFinish = async () => {
+    await onSave({
+      name: name || type,
+      type,
+      startDate: new Date(startDate).toISOString(),
+      totalDays: parseInt(totalDays),
+      currentCycle: parseInt(currentCycle),
+      totalCycles: parseInt(totalCycles),
+      notes
+    });
+  };
+
+  const renderStep = () => {
+    switch (step) {
+      case 1:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Conheça o Acompanhamento de Ciclo</h2>
+              <div className="space-y-8">
+                <div className="flex gap-4">
+                  <div className="bg-indigo-100 p-2 rounded-xl h-fit">
+                    <Calendar className="text-indigo-600" size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-[17px]">Previsões e Notificações</h4>
+                    <p className="text-apple-text-secondary text-[15px] leading-snug">Obtenha previsões das suas próximas sessões e períodos de descanso.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="bg-red-100 p-2 rounded-xl h-fit">
+                    <Zap className="text-red-600" size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-[17px]">Histórico de Ciclos</h4>
+                    <p className="text-apple-text-secondary text-[15px] leading-snug">Veja informações sobre os seus ciclos em uma linha do tempo que você pode discutir com o seu médico.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="bg-green-100 p-2 rounded-xl h-fit">
+                    <ShieldCheck className="text-green-600" size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-[17px]">Privacidade e Segurança</h4>
+                    <p className="text-apple-text-secondary text-[15px] leading-snug">As informações sobre o acompanhamento do seu ciclo são criptografadas e seguras.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-8">
+              <button onClick={handleNext} className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                Seguinte
+              </button>
+            </div>
+          </div>
+        );
+      case 2:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Qual o tipo de tratamento?</h2>
+              <div className="space-y-3">
+                {['Quimioterapia', 'Hormonioterapia', 'Radioterapia', 'Outra'].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setType(t as any)}
+                    className={`w-full p-5 rounded-2xl border-2 text-left font-bold transition-all flex justify-between items-center ${
+                      type === t ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-100 bg-gray-50 text-apple-text-primary'
+                    }`}
+                  >
+                    {t}
+                    {type === t && <Check size={20} />}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="p-8 flex gap-3">
+              <button onClick={handleBack} className="flex-1 bg-gray-100 text-apple-text-primary font-bold py-4 rounded-2xl active:scale-95 transition-transform">
+                Voltar
+              </button>
+              <button onClick={handleNext} className="flex-[2] bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                Seguinte
+              </button>
+            </div>
+          </div>
+        );
+      case 3:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Quando começou o tratamento?</h2>
+              <div className="bg-gray-50 p-6 rounded-3xl">
+                <input 
+                  type="date" 
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full bg-transparent text-2xl font-black outline-none"
+                />
+              </div>
+              <p className="mt-4 text-apple-text-secondary text-sm font-medium">Selecione a data da primeira sessão do ciclo atual.</p>
+            </div>
+            <div className="p-8 flex gap-3">
+              <button onClick={handleBack} className="flex-1 bg-gray-100 text-apple-text-primary font-bold py-4 rounded-2xl active:scale-95 transition-transform">
+                Voltar
+              </button>
+              <button onClick={handleNext} className="flex-[2] bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                Seguinte
+              </button>
+            </div>
+          </div>
+        );
+      case 4:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Qual o tempo entre cada infusão?</h2>
+              <div className="flex items-center gap-4 bg-gray-50 p-6 rounded-3xl">
+                <input 
+                  type="number" 
+                  value={totalDays}
+                  onChange={(e) => setTotalDays(e.target.value)}
+                  className="w-24 bg-transparent text-4xl font-black outline-none"
+                />
+                <span className="text-2xl font-bold text-apple-text-muted">dias</span>
+              </div>
+              <p className="mt-4 text-apple-text-secondary text-sm font-medium">Exemplo: 21 dias para ciclos de 3 semanas.</p>
+            </div>
+            <div className="p-8 flex gap-3">
+              <button onClick={handleBack} className="flex-1 bg-gray-100 text-apple-text-primary font-bold py-4 rounded-2xl active:scale-95 transition-transform">
+                Voltar
+              </button>
+              <button onClick={handleNext} className="flex-[2] bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                Seguinte
+              </button>
+            </div>
+          </div>
+        );
+      case 5:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Quantas sessões no total?</h2>
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Total de sessões</label>
+                  <div className="flex items-center gap-4 bg-gray-50 p-6 rounded-3xl">
+                    <input 
+                      type="number" 
+                      value={totalCycles}
+                      onChange={(e) => setTotalCycles(e.target.value)}
+                      className="w-full bg-transparent text-3xl font-black outline-none"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Sessão atual (já aplicada)</label>
+                  <div className="flex items-center gap-4 bg-gray-50 p-6 rounded-3xl">
+                    <input 
+                      type="number" 
+                      value={currentCycle}
+                      onChange={(e) => setCurrentCycle(e.target.value)}
+                      className="w-full bg-transparent text-3xl font-black outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-8 flex gap-3">
+              <button onClick={handleBack} className="flex-1 bg-gray-100 text-apple-text-primary font-bold py-4 rounded-2xl active:scale-95 transition-transform">
+                Voltar
+              </button>
+              <button onClick={handleNext} className="flex-[2] bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                Seguinte
+              </button>
+            </div>
+          </div>
+        );
+      case 6:
+        return (
+          <div className="flex flex-col h-full">
+            <div className="flex-grow p-8">
+              <h2 className="text-2xl font-black mb-8 leading-tight">Detalhes e Observações</h2>
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Nome do Protocolo/Medicação</label>
+                  <input 
+                    type="text" 
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Ex: AC-T, Carboplatina..."
+                    className="w-full bg-gray-50 p-5 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Observações Adicionais</label>
+                  <textarea 
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Alguma nota importante sobre o ciclo..."
+                    className="w-full bg-gray-50 p-5 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500/20 h-32 resize-none"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="p-8 space-y-3">
+              <div className="flex gap-3">
+                <button onClick={handleBack} className="flex-1 bg-gray-100 text-apple-text-primary font-bold py-4 rounded-2xl active:scale-95 transition-transform">
+                  Voltar
+                </button>
+                <button onClick={handleFinish} className="flex-[2] bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">
+                  {initialData ? 'Salvar Alterações' : 'Finalizar Cadastro'}
+                </button>
+              </div>
+              {initialData && onDelete && (
+                <button onClick={onDelete} className="w-full text-red-500 font-bold py-2 active:opacity-60 transition-opacity">
+                  Excluir Ciclo
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      className="fixed inset-0 bg-white z-[300] flex flex-col"
+    >
+      <div className="p-5 flex justify-end">
+        <button onClick={onClose} className="p-2 bg-gray-100 rounded-full text-apple-text-muted">
+          <X size={20} />
+        </button>
+      </div>
+      <div className="flex-grow overflow-y-auto">
+        {renderStep()}
+      </div>
+    </motion.div>
+  );
+};
+
 const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = ({ category, onBack }) => {
-  const { samples, addSample } = useHealth();
+  const { samples, addSample, cycles, addCycle, updateCycle, deleteCycle } = useHealth();
   const [timeRange, setTimeRange] = useState<'D' | 'S' | 'M' | '6M' | 'A'>('S');
   const [showAddData, setShowAddData] = useState(false);
   const [newValue, setNewValue] = useState('');
+
+  // Cycle form state
+  const [editingCycle, setEditingCycle] = useState<TreatmentCycle | null>(null);
+  const [isEditingHistory, setIsEditingHistory] = useState(false);
+  const [cycleToDelete, setCycleToDelete] = useState<string | null>(null);
 
   const sampleTypeMap: Record<string, string> = {
     'Atividade': 'steps',
@@ -3464,6 +4303,36 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
     setShowAddData(false);
   };
 
+  const handleSaveCycle = async (cycleData: Omit<TreatmentCycle, 'id'>) => {
+    if (editingCycle) {
+      await updateCycle(editingCycle.id, cycleData);
+    } else {
+      await addCycle(cycleData);
+    }
+    setEditingCycle(null);
+    setShowAddData(false);
+  };
+
+  const handleDeleteCycle = async () => {
+    if (editingCycle) {
+      setCycleToDelete(editingCycle.id);
+    }
+  };
+
+  const confirmDeleteFromHistory = async () => {
+    if (cycleToDelete) {
+      await deleteCycle(cycleToDelete);
+      setCycleToDelete(null);
+      setEditingCycle(null);
+      setShowAddData(false);
+    }
+  };
+
+  const currentCycle = cycles[0];
+  const daysSinceStart = currentCycle ? Math.floor((Date.now() - new Date(currentCycle.startDate).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+  const cycleDay = currentCycle ? (daysSinceStart % currentCycle.totalDays) + 1 : 0;
+  const progress = currentCycle ? (cycleDay / currentCycle.totalDays) * 100 : 0;
+
   return (
     <motion.div 
       initial={{ x: '100%' }}
@@ -3488,7 +4357,122 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
 
         <h1 className="text-3xl font-black mb-6">{category}</h1>
 
-        <div className="apple-card p-4 mb-8">
+        {category === 'Ciclo de quimioterapia' && cycles.length === 0 ? (
+          <div className="apple-card p-8 text-center">
+            <div className="bg-red-50 w-20 h-20 rounded-[32px] flex items-center justify-center mx-auto mb-6">
+              <Zap size={40} className="text-red-500" fill="currentColor" />
+            </div>
+            <h2 className="text-2xl font-black mb-4">Acompanhe seu Tratamento</h2>
+            <p className="text-apple-text-secondary font-medium mb-8">
+              Monitore suas sessões de quimioterapia, radioterapia ou hormonioterapia e acompanhe seu progresso.
+            </p>
+            <button 
+              onClick={() => setShowAddData(true)}
+              className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform"
+            >
+              Começar Cadastro
+            </button>
+          </div>
+        ) : category === 'Ciclo de quimioterapia' && currentCycle ? (
+          <div className="space-y-6">
+            <div className="apple-card p-6">
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-2xl font-black">{currentCycle.name}</h3>
+                    <button 
+                      onClick={() => {
+                        setEditingCycle(currentCycle);
+                        setShowAddData(true);
+                      }}
+                      className="text-blue-500 text-xs font-bold bg-blue-50 px-2 py-1 rounded-lg"
+                    >
+                      Editar
+                    </button>
+                  </div>
+                  <p className="text-apple-text-secondary font-bold">{currentCycle.type} • Ciclo {currentCycle.currentCycle} de {currentCycle.totalCycles}</p>
+                </div>
+                <div className="bg-red-50 p-3 rounded-2xl">
+                  <Zap size={24} className="text-red-500" fill="currentColor" />
+                </div>
+              </div>
+
+              <div className="mb-8">
+                <div className="flex justify-between items-end mb-2">
+                  <span className="text-4xl font-black">Dia {cycleDay}</span>
+                  <span className="text-apple-text-muted font-bold">de {currentCycle.totalDays} dias</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progress}%` }}
+                    className="h-full bg-red-500 rounded-full"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-apple-background p-4 rounded-2xl">
+                  <p className="text-xs font-bold text-apple-text-muted uppercase mb-1">Início</p>
+                  <p className="font-bold">{new Date(currentCycle.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</p>
+                </div>
+                <div className="bg-apple-background p-4 rounded-2xl">
+                  <p className="text-xs font-bold text-apple-text-muted uppercase mb-1">Próximo Ciclo</p>
+                  <p className="font-bold">
+                    {new Date(new Date(currentCycle.startDate).getTime() + currentCycle.totalDays * 24 * 60 * 60 * 1000).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="apple-section-header mb-0">Histórico de Ciclos</h2>
+              {cycles.length > 0 && (
+                <button 
+                  onClick={() => setIsEditingHistory(!isEditingHistory)}
+                  className="text-blue-500 text-sm font-bold active:opacity-60 transition-opacity"
+                >
+                  {isEditingHistory ? 'OK' : 'Editar'}
+                </button>
+              )}
+            </div>
+            <div className="space-y-3">
+              {cycles.map(c => (
+                <div key={c.id} className="flex items-center gap-3">
+                  <AnimatePresence>
+                    {isEditingHistory && (
+                      <motion.button
+                        initial={{ width: 0, opacity: 0 }}
+                        animate={{ width: 'auto', opacity: 1 }}
+                        exit={{ width: 0, opacity: 0 }}
+                        onClick={() => setCycleToDelete(c.id)}
+                        className="bg-red-500 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform"
+                      >
+                        <Trash2 size={18} />
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
+                  <button 
+                    onClick={() => {
+                      if (isEditingHistory) return;
+                      setEditingCycle(c);
+                      setShowAddData(true);
+                    }}
+                    className="apple-card p-4 flex justify-between items-center flex-grow text-left active:scale-[0.98] transition-transform"
+                  >
+                    <div>
+                      <p className="font-bold">{c.name}</p>
+                      <p className="text-xs text-apple-text-muted">{c.type} • Ciclo {c.currentCycle} • {new Date(c.startDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</p>
+                    </div>
+                    <ChevronRight size={20} className="text-gray-300" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="apple-card p-4 mb-8">
           <div className="flex justify-between mb-6 bg-apple-background p-1 rounded-xl">
             {['D', 'S', 'M', '6M', 'A'].map(r => (
               <button 
@@ -3567,41 +4551,88 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
             Mantenha seus registros atualizados para que sua equipe médica possa monitorar sua evolução com precisão.
           </p>
         </div>
+          </>
+        )}
       </div>
 
       <AnimatePresence>
-        {showAddData && (
-          <div className="fixed inset-0 bg-black/40 z-[200] flex items-end justify-center p-4 backdrop-blur-sm">
+        {cycleToDelete && (
+          <div className="fixed inset-0 bg-black/60 z-[500] flex items-center justify-center p-6 backdrop-blur-sm">
             <motion.div 
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
-              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-xs rounded-[24px] p-6 text-center shadow-2xl"
             >
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold">Adicionar {category}</h3>
-                <button onClick={() => setShowAddData(false)} className="text-apple-text-muted"><X /></button>
+              <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="text-red-500" size={32} />
               </div>
-              
-              <div className="mb-6">
-                <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Valor ({unit})</label>
-                <input 
-                  type="number" 
-                  value={newValue}
-                  onChange={(e) => setNewValue(e.target.value)}
-                  placeholder="0.0"
-                  className="w-full bg-apple-background rounded-2xl p-4 text-2xl font-black outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+              <h3 className="text-lg font-bold mb-2">Excluir Ciclo?</h3>
+              <p className="text-apple-text-secondary text-sm mb-6">Esta ação não pode ser desfeita.</p>
+              <div className="flex flex-col gap-2">
+                <button 
+                  onClick={confirmDeleteFromHistory}
+                  className="w-full bg-red-500 text-white font-bold py-3 rounded-xl active:scale-95 transition-transform"
+                >
+                  Excluir
+                </button>
+                <button 
+                  onClick={() => setCycleToDelete(null)}
+                  className="w-full bg-gray-100 text-apple-text-primary font-bold py-3 rounded-xl active:scale-95 transition-transform"
+                >
+                  Cancelar
+                </button>
               </div>
-
-              <button 
-                onClick={handleAddData}
-                className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform"
-              >
-                Salvar Registro
-              </button>
             </motion.div>
           </div>
+        )}
+
+        {showAddData && (
+          category === 'Ciclo de quimioterapia' ? (
+            <ChemoCycleRegistrationFlow 
+              onClose={() => {
+                setShowAddData(false);
+                setEditingCycle(null);
+              }}
+              onSave={handleSaveCycle}
+              initialData={editingCycle}
+              onDelete={handleDeleteCycle}
+            />
+          ) : (
+            <div className="fixed inset-0 bg-black/40 z-[200] flex items-end justify-center p-4 backdrop-blur-sm">
+              <motion.div 
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl overflow-y-auto max-h-[90vh]"
+              >
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-xl font-bold">
+                    Adicionar {category}
+                  </h3>
+                  <button onClick={() => setShowAddData(false)} className="text-apple-text-muted"><X /></button>
+                </div>
+                
+                <div className="mb-6">
+                  <label className="block text-xs font-bold text-apple-text-muted uppercase mb-2">Valor ({unit})</label>
+                  <input 
+                    type="number" 
+                    value={newValue}
+                    onChange={(e) => setNewValue(e.target.value)}
+                    placeholder="0.0"
+                    className="w-full bg-apple-background rounded-2xl p-4 text-2xl font-black outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+
+                <button 
+                  onClick={handleAddData}
+                  className="w-full bg-blue-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform"
+                >
+                  Salvar Registro
+                </button>
+              </motion.div>
+            </div>
+          )
         )}
       </AnimatePresence>
     </motion.div>
@@ -4182,6 +5213,34 @@ const AppContent = () => {
   const [showSymptomHistory, setShowSymptomHistory] = useState(false);
   const [showSharing, setShowSharing] = useState(false);
 
+  // Drag to scroll logic for the whole screen
+  const mainScrollRef = useRef<HTMLDivElement>(null);
+  const [isDraggingMain, setIsDraggingMain] = useState(false);
+  const [startYMain, setStartYMain] = useState(0);
+  const [scrollTopMain, setScrollTopMain] = useState(0);
+
+  const handleMouseDownMain = (e: React.MouseEvent) => {
+    // Don't drag if clicking on interactive elements
+    if ((e.target as HTMLElement).closest('button, input, select, a, [role="button"]')) return;
+    
+    if (!mainScrollRef.current) return;
+    setIsDraggingMain(true);
+    setStartYMain(e.pageY - mainScrollRef.current.offsetTop);
+    setScrollTopMain(mainScrollRef.current.scrollTop);
+  };
+
+  const handleMouseMoveMain = (e: React.MouseEvent) => {
+    if (!isDraggingMain || !mainScrollRef.current) return;
+    e.preventDefault();
+    const y = e.pageY - mainScrollRef.current.offsetTop;
+    const walk = (y - startYMain) * 1.5; // scroll speed
+    mainScrollRef.current.scrollTop = scrollTopMain - walk;
+  };
+
+  const handleMouseUpMain = () => {
+    setIsDraggingMain(false);
+  };
+
   useEffect(() => {
     if (user) {
       const onboardingDone = localStorage.getItem(`onboarding_${user.uid}`);
@@ -4229,6 +5288,7 @@ const AppContent = () => {
             isSOS: true,
             active: true
           });
+          /*
           await addDoc(cyclesRef, {
             name: 'Quimioterapia Branca',
             startDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
@@ -4236,6 +5296,7 @@ const AppContent = () => {
             currentCycle: 2,
             totalCycles: 6
           });
+          */
         } catch (error) {
           console.error("Error seeding data:", error);
         }
@@ -4264,7 +5325,14 @@ const AppContent = () => {
   }
 
   return (
-    <div className="min-h-screen max-w-md mx-auto bg-apple-background apple-gradient-bg relative">
+    <div 
+      ref={mainScrollRef}
+      onMouseDown={handleMouseDownMain}
+      onMouseMove={handleMouseMoveMain}
+      onMouseUp={handleMouseUpMain}
+      onMouseLeave={handleMouseUpMain}
+      className={`h-screen overflow-y-auto no-scrollbar max-w-md mx-auto bg-apple-background apple-gradient-bg relative ${isDraggingMain ? 'cursor-grabbing select-none' : 'cursor-default'}`}
+    >
       <AnimatePresence>
         {showOnboarding && <OnboardingView onComplete={completeOnboarding} />}
         {showProfile && <ProfileView onClose={() => setShowProfile(false)} />}
