@@ -13,20 +13,14 @@ export default defineConfig(({mode}) => {
       VitePWA({
         registerType: 'autoUpdate',
         manifest: {
-          name: 'GabreLela',
-          short_name: 'GabreLela',
-          description: 'Um dia de cada vez',
-          theme_color: '#FFFFFF',
-          background_color: '#FFFFFF',
+          name: 'Gabrilela',
+          short_name: 'Gabrilela',
+          description: 'Sua jornada de bem-estar e cuidado especializado.',
+          theme_color: '#0A1A2F',
+          background_color: '#0A1A2F',
           display: 'standalone',
           orientation: 'portrait',
           icons: [
-            {
-              src: '/apple-touch-icon.png',
-              sizes: '180x180',
-              type: 'image/png',
-              purpose: 'any',
-            },
             {
               src: '/icon-192.png',
               sizes: '192x192',
@@ -41,7 +35,7 @@ export default defineConfig(({mode}) => {
               src: '/icon-512.png',
               sizes: '512x512',
               type: 'image/png',
-              purpose: 'maskable',
+              purpose: 'any maskable',
             },
           ],
         },

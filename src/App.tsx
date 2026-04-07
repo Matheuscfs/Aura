@@ -6354,7 +6354,7 @@ const LoginScreen = () => {
       <div className="w-24 h-24 bg-apple-activity rounded-3xl flex items-center justify-center mb-8 shadow-xl shadow-apple-activity/20">
         <Heart size={48} color="white" fill="white" />
       </div>
-      <h1 className="text-4xl font-extrabold mb-4 text-center">GabreLela</h1>
+      <h1 className="text-4xl font-extrabold mb-4 text-center">Saúde</h1>
       <p className="text-apple-text-secondary text-center mb-12 max-w-xs">
         Seus dados de saúde, organizados e seguros. Replicado com os padrões do Apple Health.
       </p>
@@ -6375,7 +6375,7 @@ const OnboardingView: React.FC<{ onComplete: () => void }> = ({ onComplete }) =>
 
   const steps = [
     {
-      title: "Bem-vindo ao GabreLela",
+      title: "Bem-vindo ao Saúde",
       description: "Sua jornada de tratamento organizada e segura, seguindo os padrões do Apple Health.",
       icon: <Heart size={64} className="text-apple-activity" fill="currentColor" />,
       color: "text-apple-activity"
