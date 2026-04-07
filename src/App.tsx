@@ -44,7 +44,7 @@ import {
   Zap as ZapIcon,
   Flame
 } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { 
   onAuthStateChanged, 
@@ -141,8 +141,15 @@ const compressImage = (base64: string, mimeType: string, maxWidth = 1000, maxHei
 };
 
 const analyzeExam = async (fileData: string, fileType: string) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-  const model = "gemini-3-flash-preview";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("Configuração ausente: VITE_GEMINI_API_KEY não encontrada.");
+  }
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ 
+    model: "gemini-3-flash-preview",
+    generationConfig: { responseMimeType: "application/json" }
+  });
   
   const prompt = `Analise este documento médico (exame ou laudo). 
   Extraia as seguintes informações em formato JSON:
@@ -159,45 +166,14 @@ const analyzeExam = async (fileData: string, fileType: string) => {
   
   Responda APENAS o JSON.`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: [
-      {
-        parts: [
-          { text: prompt },
-          { inlineData: { data: fileData, mimeType: fileType } }
-        ]
-      }
-    ],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          type: { type: Type.STRING },
-          examName: { type: Type.STRING },
-          doctorName: { type: Type.STRING },
-          date: { type: Type.STRING },
-          analysis: { type: Type.STRING },
-          metrics: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                type: { type: Type.STRING },
-                value: { type: Type.NUMBER },
-                unit: { type: Type.STRING }
-              },
-              required: ["type", "value", "unit"]
-            }
-          }
-        },
-        required: ["type", "examName", "doctorName", "date", "analysis"]
-      }
-    }
-  });
-
-  return JSON.parse(response.text!);
+  const result = await model.generateContent([
+    prompt,
+    { inlineData: { data: fileData, mimeType: fileType } }
+  ]);
+  
+  const response = await result.response;
+  const text = response.text();
+  return JSON.parse(text);
 };
 
 interface ErrorBoundaryProps {
@@ -1619,7 +1595,7 @@ const MetricCard: React.FC<{
       
       {data && data.length > 0 && (
         <div className="h-14 w-full mt-4">
-          <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
             <AreaChart data={data}>
               <Area 
                 type="monotone" 
@@ -1835,6 +1811,11 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
   onOpenScheduling: () => void
 }) => {
   const { samples, user, cycles, medications, medicationLogs, exams, scheduledExams, symptomLogs, pinnedMetrics, tumorProfile } = useHealth();
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setIsMounted(true), 150);
+    return () => clearTimeout(timer);
+  }, []);
   
   const getLatest = (type: string) => {
     const filtered = samples.filter(s => s.type === type);
@@ -2026,12 +2007,14 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
                       <span className="text-xs font-bold text-apple-text-muted">mm</span>
                     </div>
                   </div>
-                  <div className="w-20 h-10">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={getHistory('tumor_size')}>
-                        <Line type="monotone" dataKey="value" stroke="#5E5CE6" strokeWidth={3} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  <div className="w-20 h-10 overflow-hidden">
+                    {isMounted && (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
+                        <LineChart data={getHistory('tumor_size')}>
+                          <Line type="monotone" dataKey="value" stroke="#5E5CE6" strokeWidth={3} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
                   </div>
                 </div>
               );
@@ -2073,12 +2056,14 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${metricDef.color}15`, color: metricDef.color }}>
                     {metricDef.icon}
                   </div>
-                  <div className="w-12 h-6">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={getHistory(metricId)}>
-                        <Line type="monotone" dataKey="value" stroke={metricDef.color} strokeWidth={2} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  <div className="w-12 h-6 overflow-hidden">
+                    {isMounted && (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
+                        <LineChart data={getHistory(metricId)}>
+                          <Line type="monotone" dataKey="value" stroke={metricDef.color} strokeWidth={2} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -2161,8 +2146,8 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
             <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest">Tamanho do Tumor (mm)</p>
           </div>
           
-          <div className="h-56 w-full">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-56 w-full overflow-hidden">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
               <AreaChart data={getHistory('tumor_size')}>
                 <defs>
                   <linearGradient id="colorTumor" x1="0" y1="0" x2="0" y2="1">
@@ -2485,8 +2470,8 @@ const MedicationDetailView: React.FC<{
         </div>
 
         {/* Chart */}
-        <div className="h-64 px-2 mb-12">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-64 px-2 mb-12 overflow-hidden">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
             <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <XAxis 
                 dataKey="name" 
@@ -4777,8 +4762,8 @@ const ExamDetailView: React.FC<{ exam: Exam; onClose: () => void }> = ({ exam, o
                       </div>
                       
                       {history.length > 1 ? (
-                        <div className="h-40 w-full p-4 bg-apple-background/30">
-                          <ResponsiveContainer width="100%" height="100%">
+                        <div className="h-40 w-full p-4 bg-apple-background/30 overflow-hidden">
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
                             <AreaChart data={history}>
                               <defs>
                                 <linearGradient id={`colorMetric-${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -5839,9 +5824,9 @@ const CategoryDetailView: React.FC<{ category: string; onBack: () => void }> = (
             </div>
           </div>
 
-          <div className="h-48 w-full mt-4">
+          <div className="h-48 w-full mt-4 overflow-hidden">
             {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
                 <AreaChart data={chartData}>
                   <defs>
                     <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
@@ -6673,8 +6658,8 @@ const TumorDetailView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <h3 className="text-lg font-black text-[#1A2B3C] tracking-tight">Curva de Redução (Volume x Diâmetro)</h3>
               </div>
 
-              <div className="h-[400px] w-full relative">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="h-[400px] w-full relative overflow-hidden">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
                   <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
