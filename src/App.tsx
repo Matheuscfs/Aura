@@ -35,7 +35,9 @@ import {
   Trash2,
   GripVertical,
   Archive,
-  Share2
+  Share2,
+  Layers,
+  Maximize
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -56,6 +58,7 @@ import {
   orderBy,
   limit,
   getDocFromServer,
+  getDoc,
   doc,
   deleteDoc,
   setDoc,
@@ -73,7 +76,8 @@ import {
   XAxis, 
   Tooltip, 
   Area, 
-  AreaChart 
+  AreaChart,
+  CartesianGrid
 } from 'recharts';
 import { auth, db } from './firebase';
 
@@ -177,6 +181,27 @@ interface Exam {
   }[];
 }
 
+interface TumorProfile {
+  id: string;
+  diagnosis: string;
+  type: string;
+  grade: string;
+  nuclearGrade: string;
+  tubularFormation: string;
+  mitoticIndex: string;
+  necrosis: string;
+  microcalcifications: string;
+  desmoplasticReaction: string;
+  inflammatoryInfiltrate: string;
+  tils: string;
+  vascularInvasion: string;
+  perineuralInvasion: string;
+  birads: string;
+  uptakeCurve: string;
+  location: string;
+  updatedAt: string;
+}
+
 interface HealthContextType {
   user: User | null;
   samples: HealthSample[];
@@ -185,8 +210,9 @@ interface HealthContextType {
   symptomLogs: SymptomLog[];
   cycles: TreatmentCycle[];
   exams: Exam[];
+  tumorProfile: TumorProfile | null;
   loading: boolean;
-  addSample: (type: string, value: number, unit: string) => Promise<void>;
+  addSample: (type: string, value: number, unit: string, timestamp?: string) => Promise<void>;
   addMedication: (med: Omit<Medication, 'id'>) => Promise<void>;
   updateMedication: (id: string, med: Partial<Medication>) => Promise<void>;
   deleteMedication: (id: string) => Promise<void>;
@@ -195,6 +221,7 @@ interface HealthContextType {
   addSymptomLog: (type: string, intensity: SymptomLog['intensity'], timestamp?: string, endDate?: string, notes?: string) => Promise<void>;
   addExam: (exam: Omit<Exam, 'id'>) => Promise<void>;
   deleteExam: (id: string) => Promise<void>;
+  updateTumorProfile: (profile: Partial<TumorProfile>) => Promise<void>;
   pinnedMetrics: string[];
   togglePinnedMetric: (metric: string) => Promise<void>;
   healthData: HealthData | null;
@@ -302,11 +329,11 @@ const analyzeExam = async (fileData: string, fileType: string) => {
   - doctorName: O nome do médico responsável (se houver)
   - date: A data do exame no formato YYYY-MM-DD
   - analysis: Um resumo curto (máximo 2 parágrafos) do que o exame diz, em termos simples.
-  - metrics: Uma lista de métricas numéricas importantes encontradas (ex: plaquetas, leucócitos, hemoglobina, etc).
+  - metrics: Uma lista de métricas numéricas importantes encontradas (ex: plaquetas, leucócitos, hemoglobina, tumor_size, etc).
     Cada métrica deve ter:
-    - type: O nome da métrica (ex: 'Plaquetas', 'Leucócitos', 'Hemoglobina', 'Glicose', etc)
-    - value: O valor numérico (apenas o número)
-    - unit: A unidade de medida (ex: 'mil/mm3', 'g/dL', 'mg/dL', etc)
+    - type: O nome da métrica (ex: 'Plaquetas', 'Leucócitos', 'Hemoglobina', 'Glicose', 'tumor_size', etc)
+    - value: O valor numérico (apenas o número). Se houver dimensões como 26,1 x 18,4 x 25,3 mm, extraia a MAIOR dimensão (ex: 26.1).
+    - unit: A unidade de medida (ex: 'mil/mm3', 'g/dL', 'mg/dL', 'mm', etc)
   
   Responda APENAS o JSON.`;
 
@@ -406,6 +433,7 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [symptomLogs, setSymptomLogs] = useState<SymptomLog[]>([]);
   const [cycles, setCycles] = useState<TreatmentCycle[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [tumorProfile, setTumorProfile] = useState<TumorProfile | null>(null);
   const [pinnedMetrics, setPinnedMetrics] = useState<string[]>(['steps', 'heart_rate', 'temperature', 'tumor_size']);
   const [healthData, setHealthData] = useState<HealthData | null>(null);
   const [medicalID, setMedicalID] = useState<MedicalID | null>(null);
@@ -501,6 +529,14 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/settings/medical_id`));
 
+    const unsubProfile = onSnapshot(doc(db, `users/${user.uid}/tumor_profile`, 'current'), (doc) => {
+      if (doc.exists()) {
+        setTumorProfile({ id: doc.id, ...doc.data() } as TumorProfile);
+      } else {
+        setTumorProfile(null);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}/tumor_profile/current`));
+
     return () => {
       unsubSamples();
       unsubMeds();
@@ -511,15 +547,16 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       unsubPinned();
       unsubHealthData();
       unsubMedicalID();
+      unsubProfile();
     };
   }, [user]);
 
-  const addSample = async (type: string, value: number, unit: string) => {
+  const addSample = async (type: string, value: number, unit: string, timestamp?: string) => {
     if (!user) return;
     const path = `users/${user.uid}/health_samples`;
     try {
       await addDoc(collection(db, path), {
-        uid: user.uid, type, value, unit, timestamp: new Date().toISOString(),
+        uid: user.uid, type, value, unit, timestamp: timestamp || new Date().toISOString(),
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
@@ -649,6 +686,19 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const updateTumorProfile = async (profile: Partial<TumorProfile>) => {
+    if (!user) return;
+    const path = `users/${user.uid}/tumor_profile/current`;
+    try {
+      await setDoc(doc(db, path), {
+        ...profile,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  };
+
   const togglePinnedMetric = async (metric: string) => {
     if (!user) return;
     const newPinned = pinnedMetrics.includes(metric)
@@ -689,8 +739,8 @@ export const HealthProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   return (
     <HealthContext.Provider value={{ 
-      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, loading, pinnedMetrics, healthData, medicalID,
-      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, togglePinnedMetric, updateHealthData, updateMedicalID, addCycle, updateCycle, deleteCycle 
+      user, samples, medications, medicationLogs, symptomLogs, cycles, exams, tumorProfile, loading, pinnedMetrics, healthData, medicalID,
+      addSample, addMedication, updateMedication, deleteMedication, reorderMedications, addMedicationLog, addSymptomLog, addExam, deleteExam, updateTumorProfile, togglePinnedMetric, updateHealthData, updateMedicalID, addCycle, updateCycle, deleteCycle 
     }}>
       {children}
     </HealthContext.Provider>
@@ -1469,15 +1519,16 @@ const ALL_METRICS = [
   { id: 'Alterações de Sono', name: 'Alterações de Sono', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
 ];
 
-const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory }: { 
+const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory, onOpenTumorDetail }: { 
   onOpenProfile: () => void, 
   onSelectCategory: (cat: string) => void,
   onSelectTab: (tab: string) => void,
   onSelectExam: (exam: Exam) => void,
   onOpenEditPinned: () => void,
-  onOpenSymptomHistory: () => void
+  onOpenSymptomHistory: () => void,
+  onOpenTumorDetail: () => void
 }) => {
-  const { samples, user, cycles, medications, medicationLogs, exams, symptomLogs, pinnedMetrics } = useHealth();
+  const { samples, user, cycles, medications, medicationLogs, exams, symptomLogs, pinnedMetrics, tumorProfile } = useHealth();
   
   const getLatest = (type: string) => {
     const filtered = samples.filter(s => s.type === type);
@@ -1489,7 +1540,10 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
       .filter(s => s.type === type)
       .slice(0, 7)
       .reverse()
-      .map(s => ({ value: s.value }));
+      .map(s => ({ 
+        value: s.value,
+        date: new Date(s.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+      }));
   };
 
   const steps = getLatest('steps');
@@ -1620,7 +1674,7 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
               return (
                 <div 
                   key={metricId}
-                  onClick={() => onSelectCategory('Exames')}
+                  onClick={onOpenTumorDetail}
                   className="apple-card p-4 col-span-2 flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-r from-indigo-50/30 to-white"
                 >
                   <div className="w-12 h-12 rounded-2xl bg-indigo-500 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
@@ -1657,7 +1711,7 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
                   <div>
                     <p className="text-[9px] font-bold text-apple-text-muted uppercase mb-0.5 tracking-tight">{metricDef.name}</p>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-lg font-black" style={{ color: metricDef.color }}>{latest?.value.toLocaleString() || '--'}</span>
+                      <span className="text-lg font-black" style={{ color: metricDef.color }}>{latest?.value?.toLocaleString() || '--'}</span>
                       <span className="text-[8px] font-bold text-apple-text-muted">{latest?.unit || ''}</span>
                     </div>
                   </div>
@@ -1686,13 +1740,130 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
                 <div>
                   <p className="text-[9px] font-bold text-apple-text-muted uppercase mb-0.5 tracking-tight">{metricDef.name}</p>
                   <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-black text-apple-text-primary">{latest?.value.toLocaleString() || (metricId === 'temperature' ? "0.0" : "0")}</span>
+                    <span className="text-lg font-black text-apple-text-primary">{latest?.value?.toLocaleString() || (metricId === 'temperature' ? "0.0" : "0")}</span>
                     <span className="text-[8px] font-bold text-apple-text-muted">{latest?.unit || (metricId === 'steps' ? 'passos' : metricId === 'heart_rate' ? 'BPM' : '°C')}</span>
                   </div>
                 </div>
               </div>
             );
           })}
+        </div>
+      </div>
+
+      <div className="mb-8">
+        <div className="flex justify-between items-end mb-4">
+          <h2 className="apple-section-header mb-0">Perfil do Tumor</h2>
+          <button onClick={onOpenTumorDetail} className="text-blue-500 font-bold text-[11px] uppercase tracking-wider">
+            {tumorProfile ? 'Ver Detalhes' : 'Adicionar'}
+          </button>
+        </div>
+        
+        <div 
+          onClick={onOpenTumorDetail}
+          className="apple-card p-5 cursor-pointer active:scale-[0.98] transition-transform bg-gradient-to-br from-white to-indigo-50/20 shadow-sm border border-indigo-100/50"
+        >
+          {tumorProfile ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-xl bg-indigo-500 flex items-center justify-center text-white shrink-0 shadow-md shadow-indigo-200">
+                  <Activity size={20} />
+                </div>
+                <div className="flex-grow">
+                  <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider mb-0.5">Diagnóstico Principal</p>
+                  <p className="text-base font-black text-apple-text-primary leading-tight">
+                    {tumorProfile.diagnosis || 'Não informado'}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4 pt-2 border-t border-apple-border/30">
+                <div>
+                  <p className="text-[9px] font-bold text-apple-text-muted uppercase tracking-tight mb-0.5">Tipo</p>
+                  <p className="text-xs font-bold text-apple-text-primary truncate">
+                    {tumorProfile.type || 'Não informado'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-apple-text-muted uppercase tracking-tight mb-0.5">Grau</p>
+                  <p className="text-xs font-bold text-apple-text-primary truncate">
+                    {tumorProfile.grade || 'Não informado'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center py-4 text-center">
+              <div className="w-12 h-12 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-400 mb-3">
+                <Activity size={24} />
+              </div>
+              <p className="text-sm font-bold text-apple-text-primary mb-1">Perfil do Tumor Incompleto</p>
+              <p className="text-[11px] text-apple-text-muted max-w-[200px]">
+                Adicione informações do seu laudo para acompanhar a evolução detalhada.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mb-8">
+        <div className="flex justify-between items-end mb-4">
+          <h2 className="apple-section-header mb-0">Evolução Gráfica</h2>
+          <button onClick={onOpenTumorDetail} className="text-blue-500 font-bold text-[11px] uppercase tracking-wider">Histórico</button>
+        </div>
+        
+        <div className="apple-card p-6 bg-white shadow-sm border border-apple-border/50">
+          <div className="flex items-center gap-2 mb-6">
+            <div className="w-2 h-2 rounded-full bg-indigo-500" />
+            <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest">Tamanho do Tumor (mm)</p>
+          </div>
+          
+          <div className="h-56 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={getHistory('tumor_size')}>
+                <defs>
+                  <linearGradient id="colorTumor" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#5E5CE6" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#5E5CE6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F2F2F7" />
+                <XAxis 
+                  dataKey="date" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#8E8E93', fontWeight: 600 }}
+                  dy={10}
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#8E8E93', fontWeight: 600 }}
+                  dx={-10}
+                />
+                <Tooltip 
+                  cursor={{ stroke: '#5E5CE6', strokeWidth: 1, strokeDasharray: '4 4' }}
+                  contentStyle={{ 
+                    borderRadius: '16px', 
+                    border: 'none', 
+                    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+                    padding: '12px'
+                  }}
+                  itemStyle={{ fontWeight: 'bold', color: '#5E5CE6' }}
+                  labelStyle={{ fontWeight: 'bold', color: '#1C1C1E', marginBottom: '4px' }}
+                />
+                <Area 
+                  type="monotone" 
+                  dataKey="value" 
+                  stroke="#5E5CE6" 
+                  strokeWidth={3} 
+                  fillOpacity={1} 
+                  fill="url(#colorTumor)" 
+                  dot={{ r: 4, fill: '#5E5CE6', strokeWidth: 2, stroke: '#fff' }}
+                  activeDot={{ r: 6, strokeWidth: 0 }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
@@ -2913,8 +3084,9 @@ const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => v
     
     // Save metrics as health samples
     if (formData.metrics && Array.isArray(formData.metrics)) {
+      const examDate = formData.date ? new Date(formData.date).toISOString() : new Date().toISOString();
       for (const metric of formData.metrics) {
-        await addSample(metric.type, metric.value, metric.unit);
+        await addSample(metric.type, metric.value, metric.unit, examDate);
       }
     }
 
@@ -5201,6 +5373,326 @@ const OnboardingView: React.FC<{ onComplete: () => void }> = ({ onComplete }) =>
   );
 };
 
+const TumorDetailView: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { tumorProfile, updateTumorProfile, samples } = useHealth();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editProfile, setEditProfile] = useState<Partial<TumorProfile>>({});
+
+  useEffect(() => {
+    if (tumorProfile) setEditProfile(tumorProfile);
+  }, [tumorProfile]);
+
+  const sizeHistory = samples
+    .filter(s => s.type === 'tumor_size')
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  const volumeHistory = samples
+    .filter(s => s.type === 'tumor_volume')
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  // Merge history for the chart
+  const chartData = sizeHistory.map(s => {
+    const v = volumeHistory.find(vh => vh.timestamp === s.timestamp);
+    return {
+      date: new Date(s.timestamp).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
+      fullDate: new Date(s.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }),
+      size: s.value,
+      volume: v ? v.value : null
+    };
+  });
+
+  const latestSize = sizeHistory.length > 0 ? sizeHistory[sizeHistory.length - 1].value : 0;
+  const latestVolume = volumeHistory.length > 0 ? volumeHistory[volumeHistory.length - 1].value : 0;
+
+  const handleSave = async () => {
+    await updateTumorProfile(editProfile);
+    setIsEditing(false);
+  };
+
+  const characteristics = [
+    { label: 'Diagnóstico', key: 'diagnosis' },
+    { label: 'Tipo Histológico', key: 'type' },
+    { label: 'Localização', key: 'location' },
+    { label: 'Grau Histológico', key: 'grade' },
+    { label: 'Grau Nuclear', key: 'nuclearGrade' },
+    { label: 'Formação Tubular', key: 'tubularFormation' },
+    { label: 'Índice Mitótico', key: 'mitoticIndex' },
+    { label: 'Necrose', key: 'necrosis' },
+    { label: 'Microcalcificações', key: 'microcalcifications' },
+    { label: 'Reação Desmoplásica', key: 'desmoplasticReaction' },
+    { label: 'Infiltrado Inflamatório', key: 'inflammatoryInfiltrate' },
+    { label: 'TILs', key: 'tils' },
+    { label: 'Invasão Vascular', key: 'vascularInvasion' },
+    { label: 'Invasão Perineural', key: 'perineuralInvasion' },
+    { label: 'Curva de Captação', key: 'uptakeCurve' },
+    { label: 'ACR BI-RADS', key: 'birads' },
+  ];
+
+  return (
+    <motion.div 
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+      className="fixed inset-0 z-[100] bg-[#F8F9FB] flex flex-col no-scrollbar overflow-y-auto"
+    >
+      {/* Header */}
+      <div className="p-6 flex justify-between items-center sticky top-0 bg-[#F8F9FB]/80 backdrop-blur-md z-20">
+        <button onClick={onClose} className="p-2 -ml-2 text-[#2D3E50] font-semibold flex items-center gap-1">
+          <ChevronLeft size={20} />
+          Voltar
+        </button>
+        <div className="text-center">
+          <h2 className="text-xl font-black text-[#1A2B3C] tracking-tight">Acompanhamento Tumoral</h2>
+          <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-wider">
+            {tumorProfile?.location || 'Evolução do Nódulo'}
+          </p>
+        </div>
+        <button 
+          onClick={() => isEditing ? handleSave() : setIsEditing(true)}
+          className="text-blue-600 font-bold px-4 py-2 rounded-full bg-blue-50 active:scale-95 transition-transform"
+        >
+          {isEditing ? 'Salvar' : 'Editar'}
+        </button>
+      </div>
+
+      <div className="px-6 pb-20 max-w-5xl mx-auto w-full">
+        {/* Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className="bg-white rounded-2xl p-5 shadow-sm border border-apple-border/30 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500">
+              <Layers size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-0.5">Volume Estimado</p>
+              <div className="flex items-baseline gap-1">
+                <span className="text-2xl font-black text-[#1A2B3C]">{latestVolume}</span>
+                <span className="text-xs font-bold text-apple-text-muted">cm³</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-5 shadow-sm border border-apple-border/30 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-500">
+              <Maximize size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-0.5">Maior Diâmetro (LL)</p>
+              <div className="flex items-baseline gap-1">
+                <span className="text-2xl font-black text-[#1A2B3C]">{latestSize}</span>
+                <span className="text-xs font-bold text-apple-text-muted">mm</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-5 shadow-sm border border-apple-border/30 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-purple-50 flex items-center justify-center text-purple-500">
+              <Activity size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-0.5">Curva de Captação</p>
+              <p className="text-lg font-black text-[#1A2B3C]">{tumorProfile?.uptakeCurve || 'Não informada'}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Main Chart */}
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-[32px] p-8 shadow-sm border border-apple-border/30 h-full">
+              <div className="flex items-center gap-2 mb-8">
+                <Activity size={18} className="text-apple-text-muted" />
+                <h3 className="text-lg font-black text-[#1A2B3C] tracking-tight">Curva de Redução (Volume x Diâmetro)</h3>
+              </div>
+
+              <div className="h-[400px] w-full relative">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
+                      </linearGradient>
+                      <linearGradient id="colorSize" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10B981" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                    <XAxis 
+                      dataKey="date" 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fontSize: 12, fill: '#64748B', fontWeight: 600 }}
+                      dy={15}
+                    />
+                    <YAxis 
+                      yAxisId="left"
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fontSize: 12, fill: '#3B82F6', fontWeight: 600 }}
+                      label={{ value: 'Volume (cm³)', angle: -90, position: 'insideLeft', style: { fill: '#3B82F6', fontWeight: 700, fontSize: 12 } }}
+                    />
+                    <YAxis 
+                      yAxisId="right"
+                      orientation="right"
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fontSize: 12, fill: '#10B981', fontWeight: 600 }}
+                      label={{ value: 'Diâmetro (mm)', angle: 90, position: 'insideRight', style: { fill: '#10B981', fontWeight: 700, fontSize: 12 } }}
+                    />
+                    <Tooltip 
+                      cursor={{ stroke: '#94A3B8', strokeWidth: 1, strokeDasharray: '4 4' }}
+                      content={({ active, payload }) => {
+                        if (active && payload && payload.length) {
+                          const volume = payload.find(p => p.dataKey === 'volume')?.value;
+                          const size = payload.find(p => p.dataKey === 'size')?.value;
+                          return (
+                            <div className="bg-white p-4 rounded-2xl shadow-xl border border-apple-border/50 backdrop-blur-sm">
+                              <p className="text-xs font-bold text-slate-400 uppercase mb-2">{payload[0].payload.fullDate}</p>
+                              <div className="space-y-1">
+                                {volume !== undefined && <p className="text-sm font-black text-blue-600">Volume: {volume} cm³</p>}
+                                {size !== undefined && <p className="text-sm font-black text-emerald-600">Diâmetro: {size} mm</p>}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      }}
+                    />
+                    <Area 
+                      yAxisId="left"
+                      type="monotone" 
+                      dataKey="volume" 
+                      stroke="#3B82F6" 
+                      strokeWidth={4} 
+                      fillOpacity={1} 
+                      fill="url(#colorVolume)" 
+                      dot={{ r: 6, fill: '#3B82F6', strokeWidth: 3, stroke: '#fff' }}
+                      activeDot={{ r: 8, strokeWidth: 0 }}
+                    />
+                    <Area 
+                      yAxisId="right"
+                      type="monotone" 
+                      dataKey="size" 
+                      stroke="#10B981" 
+                      strokeWidth={4} 
+                      fillOpacity={1} 
+                      fill="url(#colorSize)" 
+                      dot={{ r: 6, fill: '#10B981', strokeWidth: 3, stroke: '#fff' }}
+                      activeDot={{ r: 8, strokeWidth: 0 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="flex justify-center gap-8 mt-12">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-blue-500" />
+                  <span className="text-xs font-bold text-slate-600">Volume (cm³)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                  <span className="text-xs font-bold text-slate-600">Maior Diâmetro (mm)</span>
+                </div>
+              </div>
+
+              <p className="text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-8">
+                Passe o mouse sobre os pontos do gráfico para ver os detalhes daquele exame.
+              </p>
+            </div>
+          </div>
+
+          {/* Clinical Timeline */}
+          <div className="lg:col-span-1">
+            <div className="bg-white rounded-[32px] p-8 shadow-sm border border-apple-border/30 h-full">
+              <div className="flex items-center gap-2 mb-8">
+                <Calendar size={18} className="text-apple-text-muted" />
+                <h3 className="text-lg font-black text-[#1A2B3C] tracking-tight">Evolução Clínica</h3>
+              </div>
+
+              <div className="relative pl-8 space-y-12">
+                {/* Vertical Line */}
+                <div className="absolute left-[15px] top-2 bottom-2 w-0.5 bg-slate-100" />
+
+                {chartData.map((point, idx) => (
+                  <div key={idx} className="relative">
+                    {/* Circle */}
+                    <div className={`absolute -left-[25px] top-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shadow-sm z-10 ${
+                      idx === chartData.length - 1 ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'
+                    }`}>
+                      {idx + 1}
+                    </div>
+
+                    <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-100">
+                      <div className="flex justify-between items-start mb-3">
+                        <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest">{point.date}</p>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
+                          {idx === 0 ? 'DIAGNÓSTICO BASE' : idx === 1 ? 'APÓS 3 CICLOS' : 'PRÉ-CIRÚRGICO'}
+                        </p>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-2">
+                          <ChevronRight size={14} className="text-slate-300 mt-0.5" />
+                          <div>
+                            <p className="text-[10px] font-bold text-slate-500 uppercase">Margens:</p>
+                            <p className="text-xs font-bold text-slate-700">
+                              {idx === 0 ? 'Espiculadas' : idx === 1 ? 'Parcialmente espiculadas' : 'Mais regulares'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <ChevronRight size={14} className="text-slate-300 mt-0.5" />
+                          <div>
+                            <p className="text-[10px] font-bold text-slate-500 uppercase">Realce:</p>
+                            <p className="text-xs font-bold text-slate-700">
+                              {idx === 0 ? 'Precoce e heterogêneo' : idx === 1 ? 'Heterogêneo' : 'Leve / Homogêneo'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Pathological Profile */}
+        <div className="mt-8">
+          <div className="bg-white rounded-[32px] overflow-hidden shadow-sm border border-apple-border/30">
+            <div className="p-8 bg-slate-50/50 border-b border-apple-border/30">
+              <h3 className="text-lg font-black text-[#1A2B3C] tracking-tight uppercase tracking-widest">Perfil Patológico Detalhado</h3>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-0 divide-y md:divide-y-0 md:divide-x divide-apple-border/30">
+              {characteristics.map((c) => (
+                <div key={c.key} className="p-6 hover:bg-slate-50/30 transition-colors">
+                  <span className="text-[10px] font-bold text-apple-text-muted uppercase tracking-widest mb-2 block">{c.label}</span>
+                  {isEditing ? (
+                    <input 
+                      type="text"
+                      value={(editProfile as any)[c.key] || ''}
+                      onChange={(e) => setEditProfile({ ...editProfile, [c.key]: e.target.value })}
+                      className="w-full bg-slate-50 p-3 rounded-xl text-sm font-bold text-[#1A2B3C] focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-200"
+                      placeholder={`Informe o ${c.label.toLowerCase()}`}
+                    />
+                  ) : (
+                    <p className="text-sm font-black text-[#1A2B3C]">
+                      {(tumorProfile as any)?.[c.key] || 'Não informado'}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
 const AppContent = () => {
   const { user, loading, addSample } = useHealth();
   const [activeTab, setActiveTab] = useState('summary');
@@ -5212,6 +5704,7 @@ const AppContent = () => {
   const [showEditPinned, setShowEditPinned] = useState(false);
   const [showSymptomHistory, setShowSymptomHistory] = useState(false);
   const [showSharing, setShowSharing] = useState(false);
+  const [showTumorDetail, setShowTumorDetail] = useState(false);
 
   // Drag to scroll logic for the whole screen
   const mainScrollRef = useRef<HTMLDivElement>(null);
@@ -5263,10 +5756,57 @@ const AppContent = () => {
       const seedData = async () => {
         const medsRef = collection(db, `users/${user.uid}/medications`);
         const cyclesRef = collection(db, `users/${user.uid}/treatment_cycles`);
+        const samplesRef = collection(db, `users/${user.uid}/health_samples`);
+        const profileRef = doc(db, `users/${user.uid}/tumor_profile/current`);
         
-        // Check if data exists - simple check to avoid duplicates
-        // In a real app, we'd check properly
         try {
+          // Check if profile exists
+          const profileSnap = await getDoc(profileRef);
+          if (!profileSnap.exists()) {
+            await setDoc(profileRef, {
+              diagnosis: 'Carcinoma Mamário Invasivo',
+              type: 'Ductal Invasivo SOE',
+              grade: 'II (Nottingham)',
+              nuclearGrade: '2',
+              tubularFormation: 'Escore 2',
+              mitoticIndex: '11 mitoses (Escore 2)',
+              necrosis: 'Ausente',
+              microcalcifications: 'Ausentes',
+              desmoplasticReaction: 'Moderada',
+              inflammatoryInfiltrate: 'Leve',
+              tils: '10%',
+              vascularInvasion: 'Não detectada',
+              perineuralInvasion: 'Não detectada',
+              birads: '4C',
+              uptakeCurve: 'Tipo II (Platô)',
+              location: 'Quadrante Superomedial (QSM)',
+              updatedAt: new Date().toISOString()
+            });
+
+            // Add historical size and volume data
+            const historicalData = [
+              { date: '2026-01-05T10:00:00Z', size: 28, volume: 6.5 },
+              { date: '2026-03-26T10:00:00Z', size: 26.1, volume: 6.36 },
+              { date: '2026-06-15T10:00:00Z', size: 19.5, volume: 3.8 }
+            ];
+
+            for (const data of historicalData) {
+              await addDoc(samplesRef, {
+                uid: user.uid,
+                type: 'tumor_size',
+                value: data.size,
+                unit: 'mm',
+                timestamp: data.date
+              });
+              await addDoc(samplesRef, {
+                uid: user.uid,
+                type: 'tumor_volume',
+                value: data.volume,
+                unit: 'cm³',
+                timestamp: data.date
+              });
+            }
+          }
           // We'll just add if they don't exist (simplified for demo)
           await addDoc(medsRef, {
             name: 'Dexametasona',
@@ -5339,6 +5879,7 @@ const AppContent = () => {
         {showSharing && <SharingView onBack={() => setShowSharing(false)} />}
         {showEditPinned && <EditPinnedView onClose={() => setShowEditPinned(false)} />}
         {showSymptomHistory && <SymptomHistoryView onClose={() => setShowSymptomHistory(false)} />}
+        {showTumorDetail && <TumorDetailView onClose={() => setShowTumorDetail(false)} />}
         {selectedCategory && (
           <CategoryDetailView 
             category={selectedCategory} 
@@ -5368,6 +5909,7 @@ const AppContent = () => {
               onSelectExam={(exam) => setSelectedExam(exam)}
               onOpenEditPinned={() => setShowEditPinned(true)}
               onOpenSymptomHistory={() => setShowSymptomHistory(true)}
+              onOpenTumorDetail={() => setShowTumorDetail(true)}
             />
           </motion.div>
         )}

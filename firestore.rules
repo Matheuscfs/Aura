@@ -148,6 +148,13 @@ service cloud.firestore {
              isValidDateString(data.updatedAt);
     }
 
+    // Tumor Profile Validation
+    function isValidTumorProfile(data) {
+      let allowedFields = ['diagnosis', 'type', 'grade', 'nuclearGrade', 'tubularFormation', 'mitoticIndex', 'necrosis', 'microcalcifications', 'desmoplasticReaction', 'inflammatoryInfiltrate', 'tils', 'vascularInvasion', 'perineuralInvasion', 'birads', 'updatedAt'];
+      return data.keys().hasOnly(allowedFields) &&
+             isValidDateString(data.updatedAt);
+    }
+
     match /test/connection {
       allow read: if isAuthenticated();
     }
@@ -207,6 +214,11 @@ service cloud.firestore {
       match /settings/medical_id {
         allow read: if isOwner(userId);
         allow write: if isOwner(userId) && isValidMedicalID(request.resource.data);
+      }
+
+      match /tumor_profile/{profileId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidTumorProfile(request.resource.data);
       }
     }
   }

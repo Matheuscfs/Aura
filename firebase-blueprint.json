@@ -79,6 +79,28 @@
         "totalCycles": { "type": "number" }
       },
       "required": ["name", "startDate", "totalDays"]
+    },
+    "TumorProfile": {
+      "title": "Tumor Profile",
+      "description": "Detailed characteristics of the tumor.",
+      "type": "object",
+      "properties": {
+        "diagnosis": { "type": "string" },
+        "type": { "type": "string" },
+        "grade": { "type": "string" },
+        "nuclearGrade": { "type": "string" },
+        "tubularFormation": { "type": "string" },
+        "mitoticIndex": { "type": "string" },
+        "necrosis": { "type": "string" },
+        "microcalcifications": { "type": "string" },
+        "desmoplasticReaction": { "type": "string" },
+        "inflammatoryInfiltrate": { "type": "string" },
+        "tils": { "type": "string" },
+        "vascularInvasion": { "type": "string" },
+        "perineuralInvasion": { "type": "string" },
+        "birads": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
     }
   },
   "firestore": {
@@ -105,6 +127,10 @@
     "/users/{userId}/treatment_cycles/{cycleId}": {
       "schema": "TreatmentCycle",
       "description": "Treatment cycle information."
+    },
+    "/users/{userId}/tumor_profile/{profileId}": {
+      "schema": "TumorProfile",
+      "description": "Tumor profile information."
     }
   }
 }
