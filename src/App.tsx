@@ -45,7 +45,7 @@ import {
   Flame
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -85,248 +85,28 @@ import {
   CartesianGrid
 } from 'recharts';
 import { auth, db } from './firebase';
-
-// --- Types ---
-interface HealthSample {
-  id: string;
-  type: string;
-  value: number;
-  unit: string;
-  timestamp: string;
-}
-
-interface Medication {
-  id: string;
-  name: string;
-  type: string;
-  dosage?: string;
-  intensity?: string;
-  unit?: string;
-  shape?: string;
-  colors?: { left: string; right: string; background: string };
-  schedule?: { frequency: string; times: string[] };
-  duration?: { startDate: string; endDate?: string };
-  instructions: string;
-  isSOS: boolean;
-  active: boolean;
-  archived?: boolean;
-  order?: number;
-}
-
-interface MedicationLog {
-  id: string;
-  medicationId: string;
-  medicationName: string;
-  status: 'Taken' | 'Skipped';
-  timestamp: string;
-}
-
-interface SymptomLog {
-  id: string;
-  type: string;
-  intensity: 'Não Presente' | 'Presente' | 'Suave' | 'Moderado' | 'Grave';
-  timestamp: string;
-  endDate?: string;
-  notes?: string;
-}
-
-interface TreatmentCycle {
-  id: string;
-  name: string;
-  type: 'Quimioterapia' | 'Hormonioterapia' | 'Radioterapia' | 'Outra';
-  startDate: string;
-  totalDays: number;
-  currentCycle: number;
-  totalCycles: number;
-  notes?: string;
-}
-
-interface HealthData {
-  firstName: string;
-  lastName: string;
-  birthDate: string;
-  sex: string;
-  bloodType: string;
-  skinType: string;
-  isWheelchairUser: boolean;
-}
-
-interface EmergencyContact {
-  relationship: string;
-  name: string;
-  phone: string;
-}
-
-interface MedicalID {
-  showOnLockScreen: boolean;
-  pregnancy: string;
-  allergies: string;
-  medicalConditions: string;
-  height: number;
-  weight: number;
-  notes: string;
-  emergencyContacts: EmergencyContact[];
-  updatedAt: string;
-}
-
-interface ScheduledExam {
-  id: string;
-  type: string;
-  name: string;
-  date: string;
-  time: string;
-  location: string;
-  notes: string;
-  completed: boolean;
-  timestamp: string;
-}
-
-interface Exam {
-  id: string;
-  type: string;
-  examName: string;
-  doctorName: string;
-  date: string;
-  fileData: string; // Base64
-  fileType: string;
-  analysis?: string;
-  timestamp: string;
-  metrics?: {
-    type: string;
-    value: number;
-    unit: string;
-  }[];
-}
-
-interface TumorProfile {
-  id: string;
-  diagnosis: string;
-  type: string;
-  grade: string;
-  nuclearGrade: string;
-  tubularFormation: string;
-  mitoticIndex: string;
-  necrosis: string;
-  microcalcifications: string;
-  desmoplasticReaction: string;
-  inflammatoryInfiltrate: string;
-  tils: string;
-  vascularInvasion: string;
-  perineuralInvasion: string;
-  birads: string;
-  uptakeCurve: string;
-  location: string;
-  updatedAt: string;
-}
-
-interface NutritionLog {
-  id: string;
-  mealType: 'Café da Manhã' | 'Almoço' | 'Jantar' | 'Lanche';
-  content: string;
-  calories?: number;
-  timestamp: string;
-  notes?: string;
-}
-
-interface ActivityGoals {
-  steps: number;
-  distance: number;
-  active_energy: number;
-}
-
-interface HealthContextType {
-  user: User | null;
-  samples: HealthSample[];
-  medications: Medication[];
-  medicationLogs: MedicationLog[];
-  symptomLogs: SymptomLog[];
-  cycles: TreatmentCycle[];
-  exams: Exam[];
-  scheduledExams: ScheduledExam[];
-  nutritionLogs: NutritionLog[];
-  tumorProfile: TumorProfile | null;
-  activityGoals: ActivityGoals;
-  loading: boolean;
-  addSample: (type: string, value: number, unit: string, timestamp?: string) => Promise<void>;
-  addMedication: (med: Omit<Medication, 'id'>) => Promise<void>;
-  updateMedication: (id: string, med: Partial<Medication>) => Promise<void>;
-  deleteMedication: (id: string) => Promise<void>;
-  reorderMedications: (meds: Medication[]) => Promise<void>;
-  addMedicationLog: (medId: string, name: string, status: 'Taken' | 'Skipped', timestamp?: string) => Promise<void>;
-  addSymptomLog: (type: string, intensity: SymptomLog['intensity'], timestamp?: string, endDate?: string, notes?: string) => Promise<void>;
-  addExam: (exam: Omit<Exam, 'id'>) => Promise<void>;
-  deleteExam: (id: string) => Promise<void>;
-  addScheduledExam: (exam: Omit<ScheduledExam, 'id'>) => Promise<void>;
-  updateScheduledExam: (id: string, exam: Partial<ScheduledExam>) => Promise<void>;
-  deleteScheduledExam: (id: string) => Promise<void>;
-  addNutritionLog: (log: Omit<NutritionLog, 'id'>) => Promise<void>;
-  deleteNutritionLog: (id: string) => Promise<void>;
-  updateTumorProfile: (profile: Partial<TumorProfile>) => Promise<void>;
-  updateActivityGoals: (goals: Partial<ActivityGoals>) => Promise<void>;
-  pinnedMetrics: string[];
-  togglePinnedMetric: (metric: string) => Promise<void>;
-  healthData: HealthData | null;
-  updateHealthData: (data: Partial<HealthData>) => Promise<void>;
-  medicalID: MedicalID | null;
-  updateMedicalID: (data: Partial<MedicalID>) => Promise<void>;
-  addCycle: (cycle: Omit<TreatmentCycle, 'id'>) => Promise<void>;
-  updateCycle: (id: string, cycle: Partial<TreatmentCycle>) => Promise<void>;
-  deleteCycle: (id: string) => Promise<void>;
-  showToast: (message: string) => void;
-}
+import { 
+  HealthSample, 
+  Medication, 
+  MedicationLog, 
+  SymptomLog, 
+  TreatmentCycle, 
+  HealthData, 
+  EmergencyContact, 
+  MedicalID, 
+  ScheduledExam, 
+  Exam, 
+  TumorProfile, 
+  NutritionLog, 
+  ActivityGoals, 
+  HealthContextType, 
+  OperationType, 
+  FirestoreErrorInfo 
+} from './types';
+import { ALL_METRICS, EXAM_TYPES, SYMPTOMS_LIST } from './constants';
+import { handleFirestoreError } from './utils';
 
 const HealthContext = createContext<HealthContextType | undefined>(undefined);
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string;
-    email?: string | null;
-    emailVerified?: boolean;
-    isAnonymous?: boolean;
-    tenantId?: string | null;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
-}
-
-const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-};
 
 const compressImage = (base64: string, mimeType: string, maxWidth = 1000, maxHeight = 1000, quality = 0.6): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -2044,31 +1824,6 @@ const QuickActionFAB: React.FC = () => {
   );
 };
 
-const ALL_METRICS = [
-  { id: 'steps', name: 'Passos', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
-  { id: 'distance', name: 'Distância', category: 'Atividade', icon: <Activity size={18} />, color: '#FF2D55' },
-  { id: 'active_energy', name: 'Energia Ativa', category: 'Atividade', icon: <Flame size={18} />, color: '#FF2D55' },
-  { id: 'heart_rate', name: 'Batimentos', category: 'Sinais vitais', icon: <Heart size={18} />, color: '#FF3B30' },
-  { id: 'blood_pressure_sys', name: 'Pressão Sistólica', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF3B30' },
-  { id: 'blood_pressure_dia', name: 'Pressão Diastólica', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF3B30' },
-  { id: 'oxygen_saturation', name: 'Oxigênio', category: 'Sinais vitais', icon: <Wind size={18} />, color: '#007AFF' },
-  { id: 'temperature', name: 'Temperatura', category: 'Sinais vitais', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'weight', name: 'Peso', category: 'Nutrição', icon: <Scale size={18} />, color: '#34C759' },
-  { id: 'water_intake', name: 'Água', category: 'Nutrição', icon: <Droplets size={18} />, color: '#007AFF' },
-  { id: 'tumor_size', name: 'Evolução do Tumor', category: 'Exames', icon: <Activity size={18} />, color: '#5E5CE6' },
-  { id: 'Plaquetas', name: 'Plaquetas', category: 'Exames', icon: <FileText size={18} />, color: '#007AFF' },
-  { id: 'Leucócitos', name: 'Leucócitos', category: 'Exames', icon: <FileText size={18} />, color: '#34C759' },
-  { id: 'Hemoglobina', name: 'Hemoglobina', category: 'Exames', icon: <FileText size={18} />, color: '#FF3B30' },
-  { id: 'Vômito', name: 'Vômito', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Náusea', name: 'Náusea', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Fadiga', name: 'Fadiga', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Dor de Cabeça', name: 'Dor de Cabeça', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Diarreia', name: 'Diarreia', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Constipação', name: 'Constipação', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Falta de Apetite', name: 'Falta de Apetite', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-  { id: 'Alterações de Sono', name: 'Alterações de Sono', category: 'Sintomas', icon: <Activity size={18} />, color: '#FF9500' },
-];
-
 const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExam, onOpenEditPinned, onOpenSymptomHistory, onOpenTumorDetail, onOpenScheduling }: { 
   onOpenProfile: () => void, 
   onSelectCategory: (cat: string) => void,
@@ -2115,7 +1870,7 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
         </div>
         <button 
           onClick={onOpenProfile}
-          className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center overflow-hidden border-2 border-white shadow-lg active:scale-90 transition-transform"
+          className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center overflow-hidden border-2 border-white shadow-lg active:scale-90 transition-transform"
         >
           {user?.photoURL ? (
             <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -2462,7 +2217,10 @@ const SummaryView = ({ onOpenProfile, onSelectCategory, onSelectTab, onSelectExa
           <button onClick={() => onSelectTab('medications')} className="text-blue-500 font-bold text-[11px] uppercase tracking-wider">Ver Todos</button>
         </div>
         <div className="flex gap-4 overflow-x-auto pb-4 -mx-5 px-5 no-scrollbar">
-          {medications.filter(m => !m.isSOS && m.active).map(m => (
+          {medications
+            .filter(m => !m.isSOS && m.active)
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(m => (
             <div 
               key={m.id} 
               onClick={() => onSelectTab('medications')}
@@ -2882,8 +2640,17 @@ const EditMedicationListView: React.FC<{
   onReorder: (meds: Medication[]) => void,
   onAdd: () => void
 }> = ({ medications, onClose, onUpdate, onDelete, onReorder, onAdd }) => {
-  const activeMeds = medications.filter(m => !m.archived);
+  const [activeMeds, setActiveMeds] = useState<Medication[]>([]);
   const archivedMeds = medications.filter(m => m.archived);
+
+  useEffect(() => {
+    setActiveMeds(medications.filter(m => !m.archived).sort((a, b) => (a.order || 0) - (b.order || 0)));
+  }, [medications]);
+
+  const handleReorder = (newOrder: Medication[]) => {
+    setActiveMeds(newOrder);
+    onReorder(newOrder);
+  };
 
   return (
     <motion.div 
@@ -2910,34 +2677,34 @@ const EditMedicationListView: React.FC<{
 
         <div className="mb-10">
           <h3 className="text-apple-text-muted font-bold text-lg mb-6">Medicamentos Atuais</h3>
-          <div className="space-y-6">
-            {activeMeds.map((m, i) => (
-              <div key={m.id} className="flex items-center gap-4">
+          <Reorder.Group axis="y" values={activeMeds} onReorder={handleReorder} className="space-y-6">
+            {activeMeds.map((m) => (
+              <Reorder.Item key={m.id} value={m} className="flex items-center gap-4 bg-white">
                 <button 
                   onClick={() => onUpdate(m.id, { archived: true })}
-                  className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center text-white shadow-sm"
+                  className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center text-white shadow-sm shrink-0"
                 >
                   <Archive size={16} />
                 </button>
-                <div className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm overflow-hidden">
+                <div className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm overflow-hidden shrink-0">
                   <div className="rotate-45 flex">
                     <div className="w-3 h-2 rounded-l-full" style={{ backgroundColor: m.colors?.left }} />
                     <div className="w-3 h-2 rounded-r-full" style={{ backgroundColor: m.colors?.right }} />
                   </div>
                 </div>
-                <div className="flex-grow">
-                  <h4 className="font-bold text-lg">{m.name}</h4>
-                  <p className="text-apple-text-secondary">{m.type}, {m.intensity} {m.unit}</p>
+                <div className="flex-grow min-w-0">
+                  <h4 className="font-bold text-lg truncate">{m.name}</h4>
+                  <p className="text-apple-text-secondary truncate">{m.type}, {m.intensity} {m.unit}</p>
                 </div>
-                <div className="text-apple-text-muted">
+                <div className="text-apple-text-muted cursor-grab active:cursor-grabbing shrink-0">
                   <GripVertical size={24} />
                 </div>
-              </div>
+              </Reorder.Item>
             ))}
-            {activeMeds.length === 0 && (
-              <p className="text-apple-text-muted italic">Nenhum medicamento ativo.</p>
-            )}
-          </div>
+          </Reorder.Group>
+          {activeMeds.length === 0 && (
+            <p className="text-apple-text-muted italic">Nenhum medicamento ativo.</p>
+          )}
         </div>
 
         <div className="mb-10">
@@ -3064,7 +2831,10 @@ const ActivityView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </div>
           
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div 
+              onClick={() => setShowAddSteps(true)}
+              className="flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
                   <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todaySteps/activityGoals.steps)*100, 100)}%` }} />
@@ -3074,10 +2844,12 @@ const ActivityView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   <p className="text-xl font-black">{todaySteps.toLocaleString()} <span className="text-xs font-bold opacity-70">/ {activityGoals.steps.toLocaleString()}</span></p>
                 </div>
               </div>
-              <button onClick={() => setShowAddSteps(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div 
+              onClick={() => setShowAddDistance(true)}
+              className="flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
                   <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todayDistance/activityGoals.distance)*100, 100)}%` }} />
@@ -3087,10 +2859,12 @@ const ActivityView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   <p className="text-xl font-black">{todayDistance.toFixed(2)} <span className="text-xs font-bold opacity-70">/ {activityGoals.distance} km</span></p>
                 </div>
               </div>
-              <button onClick={() => setShowAddDistance(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div 
+              onClick={() => setShowAddEnergy(true)}
+              className="flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-2 h-8 bg-white/30 rounded-full overflow-hidden">
                   <div className="h-full bg-white rounded-full" style={{ height: `${Math.min((todayEnergy/activityGoals.active_energy)*100, 100)}%` }} />
@@ -3100,7 +2874,6 @@ const ActivityView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   <p className="text-xl font-black">{todayEnergy} <span className="text-xs font-bold opacity-70">/ {activityGoals.active_energy} kcal</span></p>
                 </div>
               </div>
-              <button onClick={() => setShowAddEnergy(true)} className="bg-white/20 p-2 rounded-full backdrop-blur-md"><Plus size={18} /></button>
             </div>
           </div>
         </div>
@@ -3288,7 +3061,10 @@ const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
       <div className="px-5 space-y-4">
         {/* Heart Rate Card */}
-        <div className="apple-card p-5 flex items-center justify-between">
+        <div 
+          onClick={() => setShowAddHeart(true)}
+          className="apple-card p-5 flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center text-rose-500">
               <Heart size={24} fill="currentColor" />
@@ -3301,13 +3077,13 @@ const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </p>
             </div>
           </div>
-          <button onClick={() => setShowAddHeart(true)} className="bg-rose-500 text-white p-3 rounded-2xl shadow-lg shadow-rose-500/20 active:scale-95 transition-transform">
-            <Plus size={20} />
-          </button>
         </div>
 
         {/* Blood Pressure Card */}
-        <div className="apple-card p-5 flex items-center justify-between">
+        <div 
+          onClick={() => setShowAddBP(true)}
+          className="apple-card p-5 flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-500">
               <Activity size={24} />
@@ -3322,13 +3098,13 @@ const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </p>
             </div>
           </div>
-          <button onClick={() => setShowAddBP(true)} className="bg-blue-500 text-white p-3 rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-transform">
-            <Plus size={20} />
-          </button>
         </div>
 
         {/* Oxygen Card */}
-        <div className="apple-card p-5 flex items-center justify-between">
+        <div 
+          onClick={() => setShowAddOxygen(true)}
+          className="apple-card p-5 flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-500">
               <Wind size={24} />
@@ -3341,13 +3117,13 @@ const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </p>
             </div>
           </div>
-          <button onClick={() => setShowAddOxygen(true)} className="bg-indigo-500 text-white p-3 rounded-2xl shadow-lg shadow-indigo-500/20 active:scale-95 transition-transform">
-            <Plus size={20} />
-          </button>
         </div>
 
         {/* Temperature Card */}
-        <div className="apple-card p-5 flex items-center justify-between">
+        <div 
+          onClick={() => setShowAddTemp(true)}
+          className="apple-card p-5 flex items-center justify-between cursor-pointer active:opacity-70 transition-opacity"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-orange-50 flex items-center justify-center text-orange-500">
               <Activity size={24} />
@@ -3360,9 +3136,6 @@ const VitalSignsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </p>
             </div>
           </div>
-          <button onClick={() => setShowAddTemp(true)} className="bg-orange-500 text-white p-3 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-transform">
-            <Plus size={20} />
-          </button>
         </div>
       </div>
 
@@ -3557,32 +3330,26 @@ const NutritionView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <div className="px-5 space-y-6">
         {/* Quick Stats */}
         <div className="grid grid-cols-2 gap-4">
-          <div className="apple-card p-4 bg-blue-50/50 border-blue-100">
+          <div 
+            onClick={() => setShowAddWater(true)}
+            className="apple-card p-4 bg-blue-50/50 border-blue-100 cursor-pointer active:scale-95 transition-transform"
+          >
             <div className="flex items-center gap-2 mb-2 text-blue-500">
               <Droplets size={18} />
               <span className="text-[10px] font-bold uppercase tracking-widest">Água Hoje</span>
             </div>
             <p className="text-2xl font-black text-apple-text-primary">{todayWater} <span className="text-sm font-bold text-apple-text-muted">ml</span></p>
-            <button 
-              onClick={() => setShowAddWater(true)}
-              className="mt-3 w-full py-2 bg-blue-500 text-white text-[10px] font-bold rounded-lg uppercase tracking-widest active:scale-95 transition-transform"
-            >
-              Adicionar
-            </button>
           </div>
 
-          <div className="apple-card p-4 bg-green-50/50 border-green-100">
+          <div 
+            onClick={() => setShowAddWeight(true)}
+            className="apple-card p-4 bg-green-50/50 border-green-100 cursor-pointer active:scale-95 transition-transform"
+          >
             <div className="flex items-center gap-2 mb-2 text-green-600">
               <Scale size={18} />
               <span className="text-[10px] font-bold uppercase tracking-widest">Peso Atual</span>
             </div>
             <p className="text-2xl font-black text-apple-text-primary">{latestWeight?.value || '--'} <span className="text-sm font-bold text-apple-text-muted">kg</span></p>
-            <button 
-              onClick={() => setShowAddWeight(true)}
-              className="mt-3 w-full py-2 bg-green-600 text-white text-[10px] font-bold rounded-lg uppercase tracking-widest active:scale-95 transition-transform"
-            >
-              Registrar
-            </button>
           </div>
         </div>
 
@@ -4140,7 +3907,10 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <div className="px-5 mb-12">
         <h3 className="text-2xl font-bold mb-6 tracking-tight">Registrar</h3>
         <div className="space-y-8">
-          {medications.filter(m => !m.isSOS && m.active && !m.archived).map(m => (
+          {medications
+            .filter(m => !m.isSOS && m.active && !m.archived)
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(m => (
             <div key={m.id} className="space-y-4">
               {m.schedule?.times.map((time, idx) => {
                 const log = medicationLogs.find(l => l.medicationId === m.id && new Date(l.timestamp).toDateString() === selectedDate.toDateString());
@@ -4200,7 +3970,10 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </button>
         </div>
         <div className="space-y-4">
-          {medications.filter(m => !m.archived).map(m => (
+          {medications
+            .filter(m => !m.archived)
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(m => (
             <div 
               key={m.id} 
               onClick={() => setSelectedMedicationDetails(m)}
@@ -4348,8 +4121,6 @@ const MedicationsView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     </div>
   );
 };
-
-const EXAM_TYPES = ['Receita', 'Guia Médica', 'Atestado', 'Documento', 'Laudo'];
 
 const ExamsView: React.FC<{ onBack?: () => void, onSelectExam: (exam: Exam) => void }> = ({ onBack, onSelectExam }) => {
   const { exams, addExam, addSample } = useHealth();
@@ -5320,17 +5091,6 @@ const BrowseView = ({ searchQuery, onSelectCategory, onOpenSharing }: {
     </div>
   );
 };
-
-const SYMPTOMS_LIST = [
-  "Acne", "Alterações de Apetite", "Alterações de Humor", "Alterações de Sono",
-  "Aperto ou Dor no Peito", "Azia", "Batimentos Rápidos ou Palpitantes", "Calafrios",
-  "Cólicas Abdominais", "Congestão", "Desmaio", "Diarreia", "Dor Corporal e Muscular",
-  "Dor de Cabeça", "Dor de Garganta", "Dor na Região Lombar", "Dor no Seio",
-  "Dor Pélvica", "Nariz Escorrendo", "Náusea", "Ondas de Calor", "Palpitações",
-  "Pele Seca", "Perda de Cabelo", "Perda de Memória", "Perda do Olfato",
-  "Perda do Paladar", "Prisão de Ventre", "Secura Vaginal", "Suor Noturno",
-  "Tosse", "Vômito"
-];
 
 const SYMPTOM_DESCRIPTIONS: Record<string, string> = {
   "Vômito": "O vômito ocorre quando o estômago se contrai e força seu conteúdo a sair pela boca. Muitas condições e situações podem causar a necessidade de vomitar, desde uma viagem de carro turbulenta ou gravidez até intoxicação alimentar e uma grande variedade de outras doenças.",
